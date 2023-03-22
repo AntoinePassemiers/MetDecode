@@ -18,14 +18,15 @@ chr1	1232963	1233492	2715.000	2904	3666.000	3933    ...
 Values should be tab-separated, and the three first columns correspond to the chromosome,
 start and end positions of the marker region, respectively. Starting from the fourth column, column `2i`
 gives the methylated count for cell type `i`, and column `2i+1` the total count for cell type `i`.
-Header should follow the same format as shown above.
+Header should be of the same form as shown above with the first 3 columns being `CHROM`, `START` and `END`,
+and the other column names ending either with `_METH` or `_DEPTH`.
 
 Output file `corrected-atlas.tsv` will be saved in the exact same format.
 
 The `correct.py` script has optional arguments:
 - `-p`: The degree of importance attached to the coverage. `-p 0` enforces uniform weights on the methylation ratios, while `-p 1` re-weight them based on the read counts. Any positive value (e.g. `-p 0.4`) is allowed.
 - `-lambda1`: Regularisation of the Gamma matrix. High values will constrain the Gamma matrix to stay close to the input methylation ratios.
-- `-lambda2`: Regularisation of the bias terms. High values will constrain the final correct atlas to stay close to the Gamma matrix.
+- `-lambda2`: Regularisation of the bias terms. High values will constrain the corrected atlas to stay close to the Gamma matrix.
 - `-max-correction`: Maximum difference allowed between the input methylation ratios and the corrected ratios.
 - `-multiplicative`: Whether to perform multiplicative bias correction `sigma(sigma^{-1}(gamma) + u * v)` instead of additive correction `sigma(sigma^{-1}(gamma) + u + v)`.
 - `-n-unknown-tissues`: Number of atlas entities to infer automatically from the cfDNA samples and add to the current atlas.

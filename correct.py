@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 #
-#  run.py
+#  correct.py
 #
-#  Copyright 2022 Antoine Passemiers <antoine.passemiers@gmail.com>
+#  Copyright 2023 Antoine Passemiers <antoine.passemiers@gmail.com>
 #
 #  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -19,23 +19,16 @@
 #  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
 #  MA 02110-1301, USA.
 
+import os
 import argparse
-import os.path
 
 import numpy as np
 
 from metdecode.core import MetDecode
 from metdecode.io import load_input_file, save_counts
-
-# Examples on how to run this script:
-# python main.py test_dataset/v7_cfdna_batch1_embs_inatlas.txt alpha.csv test_dataset/insil_confounder.txt metdecode -atlas-correction
-# python main.py test_dataset/v7_Insil120_Br62.txt alpha.csv test_dataset/insil_confounder.txt metdecode -atlas-correction
-# python main.py test_dataset/v7_tcga_gdna.txt alpha.csv test_dataset/gdna_confounder.txt metdecode -atlas-correction
-# python main.py test_dataset/v7_GRP_136.txt alpha.csv test_dataset/grp136_confounder.txt metdecode -atlas-correction -comprehensive-atlas
-
-# Argument parser
 from metdecode.utils import bounded_float_type
 
+# Argument parser
 parser = argparse.ArgumentParser()
 parser.add_argument(
     'atlas-filepath',

@@ -91,8 +91,8 @@ class MetDecode:
             self,
             max_correction: float = 0.1,
             p: float = 0,
-            lambda1: float = 0.,
-            lambda2: float = 0.,
+            lambda1: float = 7,
+            lambda2: float = 0.03,
             coverage_rcw: bool = True,
             multiplicative: bool = False
     ):
@@ -108,6 +108,8 @@ class MetDecode:
 
     @staticmethod
     def add_pseudo_counts(methylated, depths, pc=0.8):
+        methylated = np.copy(methylated)
+        depths = np.copy(depths)
         methylated = np.asarray(methylated, dtype=float)
         depths = np.asarray(depths, dtype=float)
         avg_meth = np.sum(methylated) / np.sum(depths)
@@ -308,6 +310,8 @@ class MetDecode:
             d1 = np.mean(diff1[j, :]) * 100.
             d2 = np.mean(diff2[j, :]) * 100.
             print(f'[MD] Avg. meth. diff. for atlas entity {j}: {d1} % -> {d2} %')
+        print(f'[MD] Avg. atlas std: {np.mean(np.std(R_atlas.cpu().data.numpy(), axis=0))} -> '
+              f'{np.mean(np.std(R_corrected, axis=0))}')
 
         self.R_atlas = np.clip(R_corrected, 0, 1)
         self.D_atlas = D_atlas

@@ -3,15 +3,11 @@ import os
 
 import numpy as np
 
-# Argument parser
 from metdecode.core import MetDecode
-# Examples on how to run this script:
-# python main.py test_dataset/v7_cfdna_batch1_embs_inatlas.txt alpha.csv test_dataset/insil_confounder.txt metdecode -atlas-correction
-# python main.py test_dataset/v7_Insil120_Br62.txt alpha.csv test_dataset/insil_confounder.txt metdecode -atlas-correction
-# python main.py test_dataset/v7_tcga_gdna.txt alpha.csv test_dataset/gdna_confounder.txt metdecode -atlas-correction
-# python main.py test_dataset/v7_GRP_136.txt alpha.csv test_dataset/grp136_confounder.txt metdecode -atlas-correction -comprehensive-atlas
 from metdecode.io import load_input_file
 
+
+# Argument parser
 parser = argparse.ArgumentParser()
 parser.add_argument(
     'atlas-filepath',

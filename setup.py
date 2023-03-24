@@ -2,7 +2,7 @@
 #
 #  setup.py
 #
-#  Copyright 2022 Antoine Passemiers <antoine.passemiers@gmail.com>
+#  Copyright 2023 Antoine Passemiers <antoine.passemiers@gmail.com>
 #
 #  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by

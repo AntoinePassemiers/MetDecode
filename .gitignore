@@ -18,3 +18,7 @@
 dist/
 build/
 .idea/
+*.egg-info/
+
+data/
+results/

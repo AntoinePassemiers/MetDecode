@@ -49,8 +49,6 @@ for marker1, marker2 in zip(marker_names, marker_names2):
 if not os.path.isdir(OUT_FILEPATH):
     os.makedirs(OUT_FILEPATH)
 
-print(sample_names)
-
 # Leave-one-out cross-validation
 alpha = []
 for i, (train_index, test_index) in tqdm.tqdm(enumerate(LeaveOneOut().split(M_cfdna))):
@@ -60,7 +58,7 @@ for i, (train_index, test_index) in tqdm.tqdm(enumerate(LeaveOneOut().split(M_cf
     if ATLAS_CORRECTION:
         if not os.path.exists(filepath):
             model = MetDecode()
-            model.fit(M_atlas, D_atlas, M_cfdna[train_index, :], D_cfdna[train_index, :], max_n_iter=2000)
+            model.fit(M_atlas, D_atlas, M_cfdna[train_index, :], D_cfdna[train_index, :], max_n_iter=2000, n_unknown_tissues=2)
             contributions = np.squeeze(model.deconvolute(M_cfdna[test_index, np.newaxis, :], D_cfdna[test_index, np.newaxis, :]))
 
             # Save results

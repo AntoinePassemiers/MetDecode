@@ -89,10 +89,10 @@ class MetDecode:
 
     def __init__(
             self,
-            max_correction: float = 0.1,
+            max_correction: float = 0.8,
             p: float = 0,
-            lambda1: float = 7,
-            lambda2: float = 0.03,
+            lambda1: float = 10,
+            lambda2: float = 0.02,
             coverage_rcw: bool = True,
             multiplicative: bool = False
     ):
@@ -268,7 +268,7 @@ class MetDecode:
             gamma_corrected = torch.clamp(gamma_corrected, lb, ub)
 
             # Methylation ratios should stay close to the original atlas
-            w = weights_atlas * torch.max(alpha, dim=0).values.unsqueeze(1)
+            w = weights_atlas * torch.max(alpha[:, :n_known_tissues], dim=0).values.unsqueeze(1)
             g2 = torch.sum(w * ((gamma[:n_known_tissues, :] - R_atlas) ** 2))
 
             # Reconstruction error of patients' profiles.

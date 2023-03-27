@@ -25,6 +25,7 @@ import numpy as np
 import torch
 import torch.nn.functional
 import tqdm
+from matplotlib import pyplot as plt
 from scipy.optimize import nnls
 from scipy.special import logit
 
@@ -150,9 +151,7 @@ class MetDecode:
 
     @staticmethod
     def rcw(mat: np.ndarray) -> np.ndarray:
-        mu1 = np.mean(mat, axis=1)[:, np.newaxis]
-        mu2 = np.mean(mat, axis=0)[np.newaxis, :]
-        return mat / (mu1 * mu2)
+        return np.log(2 + mat)
 
     @staticmethod
     def nnls(R_atlas: np.ndarray, R_cfdna: np.ndarray, W_cfdna: np.ndarray, n_unknowns: int) -> np.ndarray:
@@ -270,6 +269,7 @@ class MetDecode:
 
             # Methylation ratios should stay close to the original atlas
             w = weights_atlas * (1. + n_tissues * torch.mean(alpha[:, :n_known_tissues], dim=0).unsqueeze(1))
+            w = w / torch.clamp(torch.std(R_atlas, dim=0), 0.005).unsqueeze(0)
             g2 = torch.sum(w * ((gamma[:n_known_tissues, :] - R_atlas) ** 2))
 
             # Reconstruction error of patients' profiles.

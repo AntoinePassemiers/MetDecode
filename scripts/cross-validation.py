@@ -23,7 +23,8 @@ import os
 
 import numpy as np
 import tqdm
-from sklearn.metrics import roc_auc_score
+from matplotlib import pyplot as plt
+from sklearn.metrics import roc_auc_score, matthews_corrcoef
 from sklearn.model_selection import LeaveOneOut
 
 from metdecode.core import MetDecode
@@ -34,7 +35,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(ROOT, '..', 'data')
 OUT_FILEPATH = os.path.join(ROOT, '..', 'results')
 
-ATLAS_CORRECTION = True
+LEAVE_ONE_OUT = False
 
 # Parse input files
 M_atlas, D_atlas, entity_names, marker_names = load_input_file(os.path.join(DATA_DIR, 'atlas.tsv'))
@@ -51,28 +52,45 @@ if not os.path.isdir(OUT_FILEPATH):
 
 # Leave-one-out cross-validation
 alpha = []
+gammas = []
 for i, (train_index, test_index) in tqdm.tqdm(enumerate(LeaveOneOut().split(M_cfdna))):
     test_index = int(test_index[0])
     filepath = os.path.join(OUT_FILEPATH, f'{sample_names[test_index]}.npz')
 
-    if ATLAS_CORRECTION:
+    if LEAVE_ONE_OUT:
         if not os.path.exists(filepath):
             model = MetDecode()
             model.fit(M_atlas, D_atlas, M_cfdna[train_index, :], D_cfdna[train_index, :], max_n_iter=2000, n_unknown_tissues=1)
             contributions = np.squeeze(model.deconvolute(M_cfdna[test_index, np.newaxis, :], D_cfdna[test_index, np.newaxis, :]))
+            R = model.R_atlas
 
             # Save results
             np.savez(filepath, R=model.R_atlas, alpha=contributions)
         else:
             data = np.load(filepath)
             contributions = data['alpha']
+            R = data['R']
+        gammas.append(R[:13])
     else:
+        # data = np.load(os.path.join(OUT_FILEPATH, f'Breast-GC110676.npz'))
+        data = np.load(os.path.join(OUT_FILEPATH, f'Breast-GC110676.1.npz'))
         model = MetDecode()
         model.set_atlas(M_atlas, D_atlas)
         contributions = np.squeeze(model.deconvolute(M_cfdna[test_index, np.newaxis, :], D_cfdna[test_index, np.newaxis, :]))
 
-    alpha.append(contributions)
+    alpha.append(contributions[:13])
+print([len(x) for x in alpha])
 alpha = np.asarray(alpha)
+gammas = np.asarray(gammas)
+
+
+def best_cutoff(y, y_hat):
+    cutoffs = np.unique(y_hat)
+    scores = []
+    for cutoff in cutoffs:
+        scores.append(matthews_corrcoef(y, y_hat >= cutoff))
+    return cutoffs[np.argmax(scores)]
+
 
 settings = [
     ([0], 'Breast'),
@@ -88,4 +106,55 @@ for tissue_idx, cancer_name in settings:
 
     y_hat, y = y_hat[mask], y[mask]
 
-    print(cancer_name, roc_auc_score(y, y_hat))
+    print(
+        cancer_name,
+        roc_auc_score(y, y_hat),
+        matthews_corrcoef(y, y_hat > 0.05),
+        matthews_corrcoef(y, y_hat >= best_cutoff(y, y_hat))
+    )
+
+plt.figure(figsize=(16, 8))
+plt.subplot(2, 1, 1)
+plt.hist(np.std(gammas, axis=0).flatten(), bins=500, color='royalblue')
+plt.xlabel('Standard deviation of corrected methylation ratios across LOO folds')
+plt.ylabel('#Markers')
+plt.subplot(2, 1, 2)
+values = np.max(gammas, axis=0).flatten() - np.min(gammas, axis=0).flatten()
+plt.hist(values, bins=500, color='goldenrod')
+plt.xlabel('Range of corrected methylation ratios across LOO folds')
+plt.ylabel('#Markers')
+plt.tight_layout()
+plt.savefig('r-loo-std.png', transparent=True, dpi=200)
+plt.clf()
+plt.close()
+
+tissue_names = [
+    'BRCA',
+    'CEAD',
+    'CESC',
+    'COAD',
+    'OV',
+    'READ',
+    'B cell',
+    'CD4 T cell',
+    'CD8 T cell',
+    'Erythroblast',
+    'Monocyte',
+    'Natural killer cell',
+    'Neutrophil',
+    'Unknown'
+]
+plt.figure(figsize=(16, 8))
+for j in range(gammas.shape[1]):
+    # ys = np.max(gammas[:, j, :], axis=0).flatten() - np.min(gammas[:, j, :], axis=0).flatten()
+    ys = np.max(alpha[:, j], axis=0).flatten() - np.min(alpha[:, j], axis=0).flatten()
+    plt.hist(ys, bins=200, alpha=0.4, label=tissue_names[j])
+plt.xlim(0, 0.008)
+plt.legend()
+plt.xlabel('Range of corrected methylation ratios across LOO folds')
+plt.ylabel('#Markers')
+plt.savefig('r-loo-per-tissue.png', transparent=True, dpi=200)
+#plt.show()
+#plt.clf()
+#plt.close()
+

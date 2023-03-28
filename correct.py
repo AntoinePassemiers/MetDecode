@@ -144,9 +144,13 @@ model.fit(
     D_atlas,
     M_cfdna,
     D_cfdna,
-    n_unknown_tissues=getattr(args, 'n_unknown_tissues'),
+    n_unknown_tissues=n_unknown_tissues,
     max_n_iter=getattr(args, 'maxit')
 )
+
+entity_names = list(entity_names)
+for j in range(n_unknown_tissues):
+    entity_names.append(f'Unknown_{j + 1}')
 
 save_counts(
     OUT_FILEPATH,

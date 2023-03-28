@@ -316,6 +316,14 @@ class MetDecode:
 
         self.R_atlas = np.clip(R_corrected, 0, 1)
         self.D_atlas = D_atlas
+        if len(self.R_atlas) > len(self.D_atlas):
+            assert len(self.R_atlas) - len(self.D_atlas) == n_unknown_tissues
+            D_atlas_ = [self.D_atlas]
+            avg_depths = np.maximum(np.round(np.mean(D_atlas, axis=0)).astype(int), 1)
+            for _ in range(n_unknown_tissues):
+                D_atlas_.append(avg_depths[np.newaxis, :])
+            self.D_atlas = np.concatenate(D_atlas_, axis=0)
+            print(self.D_atlas.shape, self.D_atlas.dtype)
 
         return self
 

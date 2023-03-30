@@ -66,6 +66,7 @@ class BiasCorrection(torch.nn.Module):
                 torch.nn.Tanh(),
                 torch.nn.Linear(self.n_hidden, self.n_unknown_tissues),
             )
+            self.unknown_model.apply(BiasCorrection.init_weights)
         else:
             self.unknown_model = None
 
@@ -84,6 +85,15 @@ class BiasCorrection(torch.nn.Module):
             R_corrected = torch.cat((R_corrected, R_unknown), dim=0)
 
         return R_corrected
+
+    @staticmethod
+    def init_weights(m):
+        if isinstance(m, torch.nn.Linear):
+            if m.weight.size()[1] == 1:
+                torch.nn.init.xavier_uniform(m.weight)
+            else:
+                torch.nn.init.kaiming_uniform_(m.weight, nonlinearity='tanh')
+            m.bias.data.fill_(0.0001)
 
 
 class MetDecode:
@@ -221,8 +231,14 @@ class MetDecode:
         mc = self.max_correction
         with torch.no_grad():
             if n_unknown_tissues > 0:
-                lb = torch.cat((R_atlas - mc, torch.zeros((n_unknown_tissues, n_features))), dim=0)
-                ub = torch.cat((R_atlas + mc, torch.ones((n_unknown_tissues, n_features))), dim=0)
+                lb = torch.cat((
+                    R_atlas - mc,
+                    (torch.median(R_atlas, dim=0).values - mc).unsqueeze(0).repeat(n_unknown_tissues, 1)
+                ), dim=0)
+                ub = torch.cat((
+                    R_atlas + mc,
+                    (torch.median(R_atlas, dim=0).values + mc).unsqueeze(0).repeat(n_unknown_tissues, 1)
+                ), dim=0)
             else:
                 lb = R_atlas - mc
                 ub = R_atlas + mc
@@ -292,6 +308,8 @@ class MetDecode:
             # Update parameters
             #optimizer.step()
             optimizer.step(loss.item())
+
+            print(loss.item())
 
             # scheduler.step()
             if loss.item() >= best_loss:

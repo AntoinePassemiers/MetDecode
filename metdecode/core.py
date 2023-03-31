@@ -65,6 +65,7 @@ class BiasCorrection(torch.nn.Module):
                 torch.nn.LayerNorm(self.n_hidden),
                 torch.nn.Tanh(),
                 torch.nn.Linear(self.n_hidden, self.n_unknown_tissues),
+                torch.nn.Sigmoid()
             )
             self.unknown_model.apply(BiasCorrection.init_weights)
         else:
@@ -119,6 +120,8 @@ class MetDecode:
 
     @staticmethod
     def add_pseudo_counts(methylated, depths, pc=0.8):
+        original_methylated = methylated
+        original_depths = depths
         methylated = np.copy(methylated)
         depths = np.copy(depths)
         methylated = np.asarray(methylated, dtype=float)
@@ -156,6 +159,8 @@ class MetDecode:
         assert not np.any(np.isinf(methylated))
         assert not np.any(np.isinf(depths))
         assert np.all(methylated < depths)
+        assert np.all(np.abs(original_methylated - methylated) <= 1)
+        assert np.all(np.abs(original_depths - depths) <= 1)
 
         return methylated, depths
 
@@ -211,7 +216,6 @@ class MetDecode:
             patience: int = 100
     ) -> 'MetDecode':
 
-        n_features = D_cfdna.shape[1]
         n_known_tissues = D_atlas.shape[0]
         n_tissues = n_known_tissues + n_unknown_tissues
 
@@ -223,6 +227,15 @@ class MetDecode:
         R_atlas = torch.FloatTensor(M_atlas / D_atlas)
         R_cfdna = torch.FloatTensor(M_cfdna / D_cfdna)
 
+        # Store atlas depths, extend matrix to account for unknown entities
+        self.D_atlas = D_atlas
+        if n_unknown_tissues > 0:
+            D_atlas_ = [self.D_atlas]
+            avg_depths = np.maximum(np.round(np.mean(D_atlas, axis=0)).astype(int), 1)
+            for _ in range(n_unknown_tissues):
+                D_atlas_.append(avg_depths[np.newaxis, :])
+            self.D_atlas = np.concatenate(D_atlas_, axis=0)
+
         # Compute importance weights based on coverage
         weights_atlas = torch.FloatTensor(self.compute_weights(D_atlas))
         weights_cfdna = torch.FloatTensor(self.compute_weights(D_cfdna))
@@ -233,15 +246,19 @@ class MetDecode:
             if n_unknown_tissues > 0:
                 lb = torch.cat((
                     R_atlas - mc,
-                    (torch.median(R_atlas, dim=0).values - mc).unsqueeze(0).repeat(n_unknown_tissues, 1)
+                    (torch.min(R_atlas, dim=0).values - mc).unsqueeze(0).repeat(n_unknown_tissues, 1)
+                    # (torch.median(R_atlas, dim=0).values - mc).unsqueeze(0).repeat(n_unknown_tissues, 1)
                 ), dim=0)
                 ub = torch.cat((
                     R_atlas + mc,
-                    (torch.median(R_atlas, dim=0).values + mc).unsqueeze(0).repeat(n_unknown_tissues, 1)
+                    (torch.max(R_atlas, dim=0).values + mc).unsqueeze(0).repeat(n_unknown_tissues, 1)
+                    # (torch.median(R_atlas, dim=0).values + mc).unsqueeze(0).repeat(n_unknown_tissues, 1)
                 ), dim=0)
             else:
                 lb = R_atlas - mc
                 ub = R_atlas + mc
+            lb = torch.clamp(lb, 0, 1)
+            ub = torch.clamp(ub, 0, 1)
 
         bias_correction = BiasCorrection(
             n_known_tissues,
@@ -286,6 +303,7 @@ class MetDecode:
             # Methylation ratios should stay close to the original atlas
             w = weights_atlas * (1. + n_tissues * torch.mean(alpha[:, :n_known_tissues], dim=0).unsqueeze(1))
             w = w / torch.clamp(torch.std(R_atlas, dim=0), 0.005).unsqueeze(0)
+            w = w / torch.sum(w)
             g2 = torch.sum(w * ((gamma[:n_known_tissues, :] - R_atlas) ** 2))
 
             # Reconstruction error of patients' profiles.
@@ -332,16 +350,9 @@ class MetDecode:
         print(f'[MD] Avg. atlas std: {np.mean(np.std(R_atlas.cpu().data.numpy(), axis=0))} -> '
               f'{np.mean(np.std(R_corrected, axis=0))}')
 
+        print('TEST', np.median(np.nan_to_num((R_corrected - lb.cpu().data.numpy()) / (ub - lb).cpu().data.numpy(), nan=0.5)))
+
         self.R_atlas = np.clip(R_corrected, 0, 1)
-        self.D_atlas = D_atlas
-        if len(self.R_atlas) > len(self.D_atlas):
-            assert len(self.R_atlas) - len(self.D_atlas) == n_unknown_tissues
-            D_atlas_ = [self.D_atlas]
-            avg_depths = np.maximum(np.round(np.mean(D_atlas, axis=0)).astype(int), 1)
-            for _ in range(n_unknown_tissues):
-                D_atlas_.append(avg_depths[np.newaxis, :])
-            self.D_atlas = np.concatenate(D_atlas_, axis=0)
-            print(self.D_atlas.shape, self.D_atlas.dtype)
 
         return self
 
@@ -367,8 +378,6 @@ class MetDecode:
             M_atlas: np.ndarray,
             D_atlas: np.ndarray
     ):
-        # Add pseudo-counts
-        M_atlas, D_atlas = MetDecode.add_pseudo_counts(M_atlas, D_atlas)
-
+        assert np.all(D_atlas > 0)
         self.R_atlas = M_atlas / D_atlas
         self.D_atlas = D_atlas

@@ -35,7 +35,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(ROOT, '..', 'data')
 OUT_FILEPATH = os.path.join(ROOT, '..', 'results')
 
-LEAVE_ONE_OUT = False
+LEAVE_ONE_OUT = True
 
 # Parse input files
 M_atlas, D_atlas, entity_names, marker_names = load_input_file(os.path.join(DATA_DIR, 'atlas.tsv'))
@@ -52,6 +52,7 @@ if not os.path.isdir(OUT_FILEPATH):
 
 # Leave-one-out cross-validation
 alpha = []
+contributions = []
 gammas = []
 for i, (train_index, test_index) in tqdm.tqdm(enumerate(LeaveOneOut().split(M_cfdna))):
     test_index = int(test_index[0])
@@ -60,26 +61,32 @@ for i, (train_index, test_index) in tqdm.tqdm(enumerate(LeaveOneOut().split(M_cf
     if LEAVE_ONE_OUT:
         if not os.path.exists(filepath):
             model = MetDecode()
-            model.fit(M_atlas, D_atlas, M_cfdna[train_index, :], D_cfdna[train_index, :], max_n_iter=2000, n_unknown_tissues=1)
-            contributions = np.squeeze(model.deconvolute(M_cfdna[test_index, np.newaxis, :], D_cfdna[test_index, np.newaxis, :]))
+            model.fit(M_atlas, D_atlas, M_cfdna[train_index, :], D_cfdna[train_index, :], max_n_iter=10000, n_unknown_tissues=0)
+            contrib = np.squeeze(model.deconvolute(M_cfdna[test_index, np.newaxis, :], D_cfdna[test_index, np.newaxis, :]))
             R = model.R_atlas
+            D = model.D_atlas
+            al = model.deconvolute(M_cfdna, D_cfdna)
 
             # Save results
-            np.savez(filepath, R=model.R_atlas, alpha=contributions)
+            np.savez(filepath, R=model.R_atlas, D=model.D_atlas, contributions=contrib, alpha=al)
         else:
             data = np.load(filepath)
-            contributions = data['alpha']
+            contrib = data['contributions']
             R = data['R']
-        gammas.append(R[:13])
+            al = data['alpha']
+
+        gammas.append(R)
     else:
         # data = np.load(os.path.join(OUT_FILEPATH, f'Breast-GC110676.npz'))
         data = np.load(os.path.join(OUT_FILEPATH, f'Breast-GC110676.1.npz'))
         model = MetDecode()
         model.set_atlas(M_atlas, D_atlas)
-        contributions = np.squeeze(model.deconvolute(M_cfdna[test_index, np.newaxis, :], D_cfdna[test_index, np.newaxis, :]))
+        contrib = np.squeeze(model.deconvolute(M_cfdna[test_index, np.newaxis, :], D_cfdna[test_index, np.newaxis, :]))
+        al = model.deconvolute(M_cfdna, D_cfdna)
 
-    alpha.append(contributions[:13])
-print([len(x) for x in alpha])
+    contributions.append(contrib)
+    alpha.append(al)
+contributions = np.asarray(contributions)
 alpha = np.asarray(alpha)
 gammas = np.asarray(gammas)
 
@@ -101,7 +108,7 @@ settings = [
 
 for tissue_idx, cancer_name in settings:
     mask = np.asarray([sample_name.split('-')[0] in {'Control', cancer_name} for sample_name in sample_names], dtype=bool)
-    y_hat = np.sum(alpha[:, tissue_idx], axis=1)
+    y_hat = np.sum(contributions[:, tissue_idx], axis=1)
     y = np.asarray([sample_name.split('-')[0] == cancer_name for sample_name in sample_names], dtype=int)
 
     y_hat, y = y_hat[mask], y[mask]
@@ -146,8 +153,8 @@ tissue_names = [
 ]
 plt.figure(figsize=(16, 8))
 for j in range(gammas.shape[1]):
-    # ys = np.max(gammas[:, j, :], axis=0).flatten() - np.min(gammas[:, j, :], axis=0).flatten()
-    ys = np.max(alpha[:, j], axis=0).flatten() - np.min(alpha[:, j], axis=0).flatten()
+    ys = np.max(gammas[:, j, :], axis=0).flatten() - np.min(gammas[:, j, :], axis=0).flatten()
+    # ys = np.max(alpha[:, j], axis=0).flatten() - np.min(alpha[:, j], axis=0).flatten()
     plt.hist(ys, bins=200, alpha=0.4, label=tissue_names[j])
 plt.xlim(0, 0.008)
 plt.legend()

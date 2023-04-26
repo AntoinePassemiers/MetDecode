@@ -48,29 +48,29 @@ parser.add_argument(
 parser.add_argument(
     '-p',
     type=bounded_float_type(lb=0),
-    default=0,
+    default=0.97,
     help='Importance of coverage'
 )
 parser.add_argument(
     '-lambda1',
     type=bounded_float_type(lb=0),
-    default=3,
+    default=4.42,
     help='Regularisation on the gamma matrix'
 )
 parser.add_argument(
     '-lambda2',
     type=bounded_float_type(lb=0),
-    default=0.01,
+    default=0.0067,
     help='Regularisation on the bias terms'
 )
 parser.add_argument(
     '-max-correction',
-    type=bounded_float_type(lb=0, ub=0.5),
-    default=0.1,
+    type=bounded_float_type(lb=0, ub=1.0),
+    default=0.808,
     help='Maximum correction for each methylation ratio'
 )
 parser.add_argument(
-    '-multiplicative',
+    '-additive',
     default=False,
     action='store_true',
     help='Whether to perform multiplicative bias correction instead of additive correction'
@@ -84,7 +84,7 @@ parser.add_argument(
 parser.add_argument(
     '-n-hidden',
     type=int,
-    default=8,
+    default=2,
     help='Number of hidden neurons per neural network layer (modeling of unknowns only)'
 )
 parser.add_argument(
@@ -137,7 +137,9 @@ model = MetDecode(
     p=args.p,
     lambda1=args.lambda1,
     lambda2=args.lambda2,
-    max_correction=args.max_correction
+    max_correction=args.max_correction,
+    multiplicative=(not args.additive),
+    n_hidden=args.n_hidden
 )
 model.fit(
     M_atlas,

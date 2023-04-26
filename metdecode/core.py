@@ -25,7 +25,6 @@ import numpy as np
 import torch
 import torch.nn.functional
 import tqdm
-from matplotlib import pyplot as plt
 from scipy.optimize import nnls
 from scipy.special import logit
 
@@ -39,11 +38,12 @@ class BiasCorrection(torch.nn.Module):
             n_tissues: int,
             n_markers: int,
             n_unknown_tissues: int = 0,
-            multiplicative: bool = False
+            multiplicative: bool = False,
+            n_hidden: int = 8
     ):
         torch.nn.Module.__init__(self)
         self.n_tissues: int = n_tissues
-        self.n_hidden: int = 8
+        self.n_hidden: int = n_hidden
         self.n_unknown_tissues: int = n_unknown_tissues
         self.multiplicative: bool = multiplicative
 
@@ -82,7 +82,10 @@ class BiasCorrection(torch.nn.Module):
 
         # Modelling of unknown tissues
         if self.unknown_model is not None:
-            R_unknown = self.unknown_model.forward(R_corrected.t()).t()
+            lb = torch.min(R_corrected, dim=0).values.unsqueeze(0) - 1e-5
+            ub = torch.max(R_corrected, dim=0).values.unsqueeze(0) + 1e-5
+            prop = self.unknown_model.forward(R_corrected.t()).t()
+            R_unknown = torch.clamp(prop * (ub - lb) + lb, 0, 1)
             R_corrected = torch.cat((R_corrected, R_unknown), dim=0)
 
         return R_corrected
@@ -101,12 +104,13 @@ class MetDecode:
 
     def __init__(
             self,
-            max_correction: float = 0.1,
-            p: float = 0,
-            lambda1: float = 5,
-            lambda2: float = 0.02,
+            max_correction: float = 0.808,
+            p: float = 0.97,
+            lambda1: float = 4.42,
+            lambda2: float = 0.0067,
             coverage_rcw: bool = True,
-            multiplicative: bool = False
+            multiplicative: bool = True,
+            n_hidden: int = 2
     ):
         self.max_correction: float = max_correction
         self.p: float = p
@@ -114,6 +118,7 @@ class MetDecode:
         self.lambda2: float = lambda2
         self.coverage_rcw: bool = coverage_rcw
         self.multiplicative: bool = multiplicative
+        self.n_hidden: int = max(n_hidden, 1)
 
         self.R_atlas: Optional[np.ndarray] = None
         self.D_atlas: Optional[np.ndarray] = None
@@ -264,7 +269,8 @@ class MetDecode:
             n_known_tissues,
             D_cfdna.shape[1],
             n_unknown_tissues=n_unknown_tissues,
-            multiplicative=self.multiplicative
+            multiplicative=self.multiplicative,
+            n_hidden=self.n_hidden
         )
 
         print(f'[MD] Unknown tissues    : {n_unknown_tissues}')
@@ -327,8 +333,6 @@ class MetDecode:
             #optimizer.step()
             optimizer.step(loss.item())
 
-            print(loss.item())
-
             # scheduler.step()
             if loss.item() >= best_loss:
                 n_steps_without_improvement += 1
@@ -350,7 +354,7 @@ class MetDecode:
         print(f'[MD] Avg. atlas std: {np.mean(np.std(R_atlas.cpu().data.numpy(), axis=0))} -> '
               f'{np.mean(np.std(R_corrected, axis=0))}')
 
-        print('TEST', np.median(np.nan_to_num((R_corrected - lb.cpu().data.numpy()) / (ub - lb).cpu().data.numpy(), nan=0.5)))
+        # print('TEST', np.median(np.nan_to_num((R_corrected - lb.cpu().data.numpy()) / (ub - lb).cpu().data.numpy(), nan=0.5)))
 
         self.R_atlas = np.clip(R_corrected, 0, 1)
 

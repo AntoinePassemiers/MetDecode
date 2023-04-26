@@ -24,7 +24,7 @@ import os
 import numpy as np
 import tqdm
 from matplotlib import pyplot as plt
-from sklearn.metrics import roc_auc_score, matthews_corrcoef
+from sklearn.metrics import roc_auc_score, matthews_corrcoef, recall_score, confusion_matrix
 from sklearn.model_selection import LeaveOneOut
 
 from metdecode.core import MetDecode
@@ -113,25 +113,52 @@ for tissue_idx, cancer_name in settings:
 
     y_hat, y = y_hat[mask], y[mask]
 
+    cutoff = best_cutoff(y, y_hat)
+
+    tn, fp, fn, tp = confusion_matrix(y, y_hat >= cutoff).ravel()
+    specificity = tn / (tn + fp)
+    sensitivity = tp / (tp + fn)
+
     print(
         cancer_name,
         roc_auc_score(y, y_hat),
-        matthews_corrcoef(y, y_hat > 0.05),
-        matthews_corrcoef(y, y_hat >= best_cutoff(y, y_hat))
+        matthews_corrcoef(y, y_hat >= cutoff),
+        sensitivity,
+        specificity
     )
 
+print(np.quantile(np.std(gammas, axis=0).flatten(), 0.99))
+print(np.quantile(np.max(gammas, axis=0).flatten() - np.min(gammas, axis=0).flatten(), 0.99))
+print(np.quantile(np.std(alpha, axis=0).flatten(), 0.99))
+print(np.quantile(np.max(alpha, axis=0).flatten() - np.min(alpha, axis=0).flatten(), 0.99))
+print(np.mean(np.max(alpha, axis=0).flatten() - np.min(alpha, axis=0).flatten() >= 0.01), len(np.max(alpha, axis=0).flatten() - np.min(alpha, axis=0).flatten()))
+
 plt.figure(figsize=(16, 8))
-plt.subplot(2, 1, 1)
+plt.subplot(2, 2, 1)
 plt.hist(np.std(gammas, axis=0).flatten(), bins=500, color='royalblue')
+plt.yscale('log')
 plt.xlabel('Standard deviation of corrected methylation ratios across LOO folds')
 plt.ylabel('#Markers')
-plt.subplot(2, 1, 2)
+plt.subplot(2, 2, 3)
 values = np.max(gammas, axis=0).flatten() - np.min(gammas, axis=0).flatten()
-plt.hist(values, bins=500, color='goldenrod')
+plt.hist(values, bins=500, color='royalblue')
+plt.yscale('log')
 plt.xlabel('Range of corrected methylation ratios across LOO folds')
 plt.ylabel('#Markers')
 plt.tight_layout()
-plt.savefig('r-loo-std.png', transparent=True, dpi=200)
+plt.subplot(2, 2, 2)
+plt.hist(np.std(alpha, axis=0).flatten(), bins=500, color='goldenrod')
+plt.yscale('log')
+plt.xlabel('Standard deviation of estimated contributors across LOO folds')
+plt.ylabel('#Markers')
+plt.subplot(2, 2, 4)
+values = np.max(alpha, axis=0).flatten() - np.min(alpha, axis=0).flatten()
+plt.hist(values, bins=500, color='goldenrod')
+plt.yscale('log')
+plt.xlabel('Range of estimated contributors across LOO folds')
+plt.ylabel('#Markers')
+plt.tight_layout()
+plt.savefig('loo-stability.png', transparent=True, dpi=200)
 plt.clf()
 plt.close()
 

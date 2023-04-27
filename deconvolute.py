@@ -27,7 +27,7 @@ parser.add_argument(
 parser.add_argument(
     '-p',
     type=float,
-    default=0,
+    default=0.97,
     help='Importance of coverage'
 )
 args = parser.parse_args()

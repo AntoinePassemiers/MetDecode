@@ -90,7 +90,7 @@ parser.add_argument(
 parser.add_argument(
     '-maxit',
     type=int,
-    default=10000,
+    default=2000,
     help='Maximum number of iterations per correction module (correction only)'
 )
 args = parser.parse_args()

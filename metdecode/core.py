@@ -350,7 +350,8 @@ class MetDecode:
         for j in range(diff1.shape[0]):
             d1 = np.mean(diff1[j, :]) * 100.
             d2 = np.mean(diff2[j, :]) * 100.
-            print(f'[MD] Avg. meth. diff. for atlas entity {j}: {d1} % -> {d2} %')
+            # print(f'[MD] Avg. meth. diff. for atlas entity {j}: {d1} % -> {d2} %')
+            print(f'[MD] Avg. meth. diff. for atlas entity {j}: {d2} %')
         print(f'[MD] Avg. atlas std: {np.mean(np.std(R_atlas.cpu().data.numpy(), axis=0))} -> '
               f'{np.mean(np.std(R_corrected, axis=0))}')
 

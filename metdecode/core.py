@@ -25,8 +25,10 @@ import numpy as np
 import torch
 import torch.nn.functional
 import tqdm
+from matplotlib import pyplot as plt
 from scipy.optimize import nnls
 from scipy.special import logit
+from sklearn.decomposition import PCA
 
 from metdecode.optimizer import Optimizer
 
@@ -37,56 +39,23 @@ class BiasCorrection(torch.nn.Module):
             self,
             n_tissues: int,
             n_markers: int,
-            n_unknown_tissues: int = 0,
-            multiplicative: bool = False,
-            n_hidden: int = 8
+            multiplicative: bool,
     ):
         torch.nn.Module.__init__(self)
         self.n_tissues: int = n_tissues
-        self.n_hidden: int = n_hidden
-        self.n_unknown_tissues: int = n_unknown_tissues
         self.multiplicative: bool = multiplicative
 
         self.tissue_bias = torch.nn.Parameter(torch.FloatTensor(np.random.normal(0, 0.01, size=n_tissues)))
         self.marker_bias = torch.nn.Parameter(torch.FloatTensor(np.random.normal(0, 0.01, size=n_markers)))
-
-        if self.n_unknown_tissues > 0:
-            self.unknown_model = torch.nn.Sequential(
-                torch.nn.Linear(self.n_tissues, self.n_hidden),
-                torch.nn.LayerNorm(self.n_hidden),
-                torch.nn.Tanh(),
-                torch.nn.Linear(self.n_hidden, self.n_hidden),
-                torch.nn.LayerNorm(self.n_hidden),
-                torch.nn.Tanh(),
-                torch.nn.Linear(self.n_hidden, self.n_hidden),
-                torch.nn.LayerNorm(self.n_hidden),
-                torch.nn.Tanh(),
-                torch.nn.Linear(self.n_hidden, self.n_hidden),
-                torch.nn.LayerNorm(self.n_hidden),
-                torch.nn.Tanh(),
-                torch.nn.Linear(self.n_hidden, self.n_unknown_tissues),
-                torch.nn.Sigmoid()
-            )
-            self.unknown_model.apply(BiasCorrection.init_weights)
-        else:
-            self.unknown_model = None
 
     def forward(self, R_logit: torch.Tensor) -> torch.Tensor:
 
         # Atlas correction
         if self.multiplicative:
             bias_logit = self.marker_bias.unsqueeze(0) * self.tissue_bias.unsqueeze(1)
+            R_corrected = torch.sigmoid(R_logit + bias_logit)
         else:
-            bias_logit = self.marker_bias.unsqueeze(0) + self.tissue_bias.unsqueeze(1)
-        R_corrected = torch.sigmoid(R_logit + bias_logit)
-
-        # Modelling of unknown tissues
-        if self.unknown_model is not None:
-            lb = torch.min(R_corrected, dim=0).values.unsqueeze(0) - 1e-5
-            ub = torch.max(R_corrected, dim=0).values.unsqueeze(0) + 1e-5
-            prop = self.unknown_model.forward(R_corrected.t()).t()
-            R_unknown = torch.clamp(prop * (ub - lb) + lb, 0, 1)
-            R_corrected = torch.cat((R_corrected, R_unknown), dim=0)
+            R_corrected = torch.sigmoid(R_logit) ** (1. + self.tissue_bias.unsqueeze(1))
 
         return R_corrected
 
@@ -104,13 +73,22 @@ class MetDecode:
 
     def __init__(
             self,
-            max_correction: float = 0.808,
-            p: float = 0.97,
-            lambda1: float = 4.42,
-            lambda2: float = 0.0067,
-            coverage_rcw: bool = True,
-            multiplicative: bool = True,
-            n_hidden: int = 2
+            max_correction: float = 0.1,
+            p: float = 1.0,
+            lambda1: float = 0.001,
+            lambda2: float = 0.001,
+            coverage_rcw: bool = False,
+            multiplicative: bool = False,
+            z1: float = 1.0,
+            z2: float = 0.1,
+            alpha_weighting: bool = True,
+            std_weighting: bool = True,
+            unk_clip: bool = True,
+            unk_qt: bool = True,
+            unk_bound: bool = False,
+            unk_q: float = 0.05,
+            init_unk_prop: float = 0.1,
+            verbose: bool = True
     ):
         self.max_correction: float = max_correction
         self.p: float = p
@@ -118,7 +96,16 @@ class MetDecode:
         self.lambda2: float = lambda2
         self.coverage_rcw: bool = coverage_rcw
         self.multiplicative: bool = multiplicative
-        self.n_hidden: int = max(n_hidden, 1)
+        self.z1: float = z1
+        self.z2: float = z2
+        self.alpha_weighting: bool = alpha_weighting
+        self.std_weighting: bool = std_weighting
+        self.unk_clip: bool = unk_clip
+        self.unk_qt: bool = unk_qt
+        self.unk_bound: bool = unk_bound
+        self.unk_q: float = unk_q
+        self.init_unk_prop: float = init_unk_prop
+        self.verbose: bool = verbose
 
         self.R_atlas: Optional[np.ndarray] = None
         self.D_atlas: Optional[np.ndarray] = None
@@ -170,41 +157,79 @@ class MetDecode:
         return methylated, depths
 
     @staticmethod
+    def quantile_transform(x1: np.ndarray, x2: np.ndarray) -> np.ndarray:
+        inv_idx1 = np.argsort(np.argsort(x1))
+        idx2 = np.argsort(x2)
+        return x2[idx2[inv_idx1]]
+
+    @staticmethod
     def rcw(mat: np.ndarray) -> np.ndarray:
         return np.log(2 + mat)
 
     @staticmethod
-    def nnls(R_atlas: np.ndarray, R_cfdna: np.ndarray, W_cfdna: np.ndarray, n_unknowns: int) -> np.ndarray:
+    def nnls(R_atlas: np.ndarray, R_cfdna: np.ndarray, W_cfdna: np.ndarray) -> np.ndarray:
         n_samples = len(R_cfdna)
         alpha_hat = []
         for i in range(n_samples):
             A = (np.sqrt(W_cfdna[np.newaxis, i, :]) * R_atlas).T
             b = np.sqrt(W_cfdna[i, :]) * R_cfdna[i, :]
             x, residuals = nnls(A, b, maxiter=3000)
-            if n_unknowns > 0:
-                x = np.concatenate((x, np.full(n_unknowns, 0.2 / n_unknowns)))
             alpha_hat.append(x)
         alpha_hat = np.asarray(alpha_hat)
         alpha_hat /= alpha_hat.sum(axis=1)[:, np.newaxis]
         return alpha_hat
 
-    @staticmethod
     def init_alpha_and_gamma(
+            self,
             R_atlas: np.ndarray,
             R_cfdna: np.ndarray,
             W_cfdna: np.ndarray,
-            n_unknowns: int
+            n_unknowns: int,
+            init_unk_prop: float = 0.1
     ) -> Tuple[np.ndarray, np.ndarray]:
-        alpha_hat = MetDecode.nnls(R_atlas, R_cfdna, W_cfdna, n_unknowns)
+
+        n_known = R_atlas.shape[0]
+
+        # Bounds on the unknown tissues
+        lb = np.min(R_atlas, axis=0) - 1e-4
+        ub = np.max(R_atlas, axis=0) + 1e-4
+
+        # Adding unknown tissues to the atlas
+        if n_unknowns > 0:
+            for _ in range(n_unknowns):
+                alpha_hat = MetDecode.nnls(R_atlas, R_cfdna, W_cfdna)
+                residuals = np.mean(np.dot(alpha_hat, R_atlas) - R_cfdna, axis=0)
+
+                unk = 1. - residuals
+                if self.unk_bound:
+                    unk = (unk >= 0).astype(float) * (1.0 - 2 * self.unk_q) + self.unk_q
+                    unk = lb + unk * (ub - lb)
+                if self.unk_qt:
+                    unk = MetDecode.quantile_transform(unk, np.median(R_atlas, axis=0))
+                if self.unk_clip:
+                    unk = np.clip(unk, lb, ub)
+                else:
+                    unk = np.clip(unk, 0, 1)
+
+                R_atlas = np.concatenate((R_atlas, unk[np.newaxis, :]), axis=0)
+
+        # Deconvolve using full atlas
+        alpha_hat = MetDecode.nnls(R_atlas, R_cfdna, W_cfdna)
+        alpha_hat += 1e-7
+        alpha_hat[:, :n_known] /= np.sum(alpha_hat[:, :n_known], axis=1)[:, np.newaxis]
+        alpha_hat[:, :n_known] *= (1. - init_unk_prop)
+        alpha_hat[:, n_known:] /= np.sum(alpha_hat[:, n_known:], axis=1)[:, np.newaxis]
+        alpha_hat[:, n_known:] *= init_unk_prop
+
+        # Convert to log-scale
         alpha_hat += 1e-6
         alpha_hat /= np.sum(alpha_hat, axis=1)[:, np.newaxis]
         alpha_logit = np.log(alpha_hat)
-
         gamma_logit = logit(R_atlas)
-
         return alpha_logit, gamma_logit
 
     def compute_weights(self, depths: np.ndarray) -> np.ndarray:
+        depths = np.clip(depths, 0, 200)
         if self.coverage_rcw:
             depths = MetDecode.rcw(depths)
         depths = depths ** self.p
@@ -232,6 +257,14 @@ class MetDecode:
         R_atlas = torch.FloatTensor(M_atlas / D_atlas)
         R_cfdna = torch.FloatTensor(M_cfdna / D_cfdna)
 
+        pca = PCA()
+        coords = pca.fit_transform(R_atlas)
+        plt.scatter(coords[:6, 0], coords[:6, 1], color='blue', marker='x')
+        plt.scatter(coords[6:, 0], coords[6:, 1], color='blue', marker='o')
+        coords = pca.transform(R_cfdna)
+        plt.scatter(coords[:, 0], coords[:, 1], color='orange')
+        plt.show()
+
         # Store atlas depths, extend matrix to account for unknown entities
         self.D_atlas = D_atlas
         if n_unknown_tissues > 0:
@@ -242,49 +275,35 @@ class MetDecode:
             self.D_atlas = np.concatenate(D_atlas_, axis=0)
 
         # Compute importance weights based on coverage
-        weights_atlas = torch.FloatTensor(self.compute_weights(D_atlas))
+        weights_atlas = torch.FloatTensor(self.compute_weights(self.D_atlas))
         weights_cfdna = torch.FloatTensor(self.compute_weights(D_cfdna))
+
+        alpha_logit, gamma_logit = self.init_alpha_and_gamma(
+            R_atlas.cpu().data.numpy(), R_cfdna.cpu().data.numpy(),
+            weights_cfdna.cpu().data.numpy(), n_unknown_tissues,
+            init_unk_prop=self.init_unk_prop,
+        )
+        with torch.no_grad():
+            R_atlas = torch.sigmoid(torch.FloatTensor(gamma_logit))
 
         # Compute lower and upper bounds on methylation ratios
         mc = self.max_correction
         with torch.no_grad():
-            if n_unknown_tissues > 0:
-                lb = torch.cat((
-                    R_atlas - mc,
-                    (torch.min(R_atlas, dim=0).values - mc).unsqueeze(0).repeat(n_unknown_tissues, 1)
-                    # (torch.median(R_atlas, dim=0).values - mc).unsqueeze(0).repeat(n_unknown_tissues, 1)
-                ), dim=0)
-                ub = torch.cat((
-                    R_atlas + mc,
-                    (torch.max(R_atlas, dim=0).values + mc).unsqueeze(0).repeat(n_unknown_tissues, 1)
-                    # (torch.median(R_atlas, dim=0).values + mc).unsqueeze(0).repeat(n_unknown_tissues, 1)
-                ), dim=0)
-            else:
-                lb = R_atlas - mc
-                ub = R_atlas + mc
-            lb = torch.clamp(lb, 0, 1)
-            ub = torch.clamp(ub, 0, 1)
+            lb = torch.clamp(R_atlas - mc, 0, 1)  # Lower bounds
+            ub = torch.clamp(R_atlas + mc, 0, 1)  # Upper bounds
 
-        bias_correction = BiasCorrection(
-            n_known_tissues,
-            D_cfdna.shape[1],
-            n_unknown_tissues=n_unknown_tissues,
-            multiplicative=self.multiplicative,
-            n_hidden=self.n_hidden
-        )
+        bias_correction = BiasCorrection(n_tissues, D_cfdna.shape[1], self.multiplicative)
 
-        print(f'[MD] Unknown tissues    : {n_unknown_tissues}')
-        print(f'[MD] Maximum correction : {self.max_correction}')
-        print(f'[MD] p coefficient      : {self.p}')
+        if self.verbose:
+            print(f'[MD] Unknown tissues    : {n_unknown_tissues}')
+            print(f'[MD] Maximum correction : {self.max_correction}')
+            print(f'[MD] p coefficient      : {self.p}')
 
         info = {'loss': []}
 
-        alpha_logit, gamma_logit = MetDecode.init_alpha_and_gamma(
-            R_atlas.cpu().data.numpy(), R_cfdna.cpu().data.numpy(),
-            weights_cfdna.cpu().data.numpy(), n_unknown_tissues
-        )
         with torch.no_grad():
             gamma_corrected = torch.sigmoid(torch.FloatTensor(gamma_logit))
+        gamma_best = torch.clone(gamma_corrected)
         alpha_logit = torch.nn.Parameter(torch.FloatTensor(np.copy(alpha_logit)))
         gamma_logit = torch.nn.Parameter(torch.FloatTensor(np.copy(gamma_logit)))
 
@@ -295,7 +314,7 @@ class MetDecode:
 
         n_steps_without_improvement = 0
         best_loss = np.inf
-        for _ in tqdm.tqdm(range(max_n_iter), desc='Correcting atlas'):
+        for it in tqdm.tqdm(range(max_n_iter), desc='Correcting atlas'):
 
             optimizer.zero_grad()
 
@@ -307,15 +326,18 @@ class MetDecode:
             gamma_corrected = torch.clamp(gamma_corrected, lb, ub)
 
             # Methylation ratios should stay close to the original atlas
-            w = weights_atlas * (1. + n_tissues * torch.mean(alpha[:, :n_known_tissues], dim=0).unsqueeze(1))
-            w = w / torch.clamp(torch.std(R_atlas, dim=0), 0.005).unsqueeze(0)
+            w = weights_atlas
+            if self.alpha_weighting:
+                w = w * (self.z1 + n_tissues * torch.mean(alpha, dim=0).unsqueeze(1))
+            if self.std_weighting:
+                w = w / torch.clamp(torch.std(R_atlas, dim=0), self.z2).unsqueeze(0)
             w = w / torch.sum(w)
-            g2 = torch.sum(w * ((gamma[:n_known_tissues, :] - R_atlas) ** 2))
+            g2 = torch.max(w * ((gamma - R_atlas) ** 2))
 
             # Reconstruction error of patients' profiles.
             # cfDNA profiles are reconstructed based on the corrected atlas
             R_reconstructed = torch.mm(alpha, gamma_corrected)
-            g1 = torch.sum(weights_cfdna * ((R_reconstructed - R_cfdna) ** 2))
+            g1 = torch.max(weights_cfdna * ((R_reconstructed - R_cfdna) ** 2))
 
             # Regularisation on the bias terms
             u_l2 = torch.mean(bias_correction.tissue_bias ** 2)
@@ -334,26 +356,30 @@ class MetDecode:
             optimizer.step(loss.item())
 
             # scheduler.step()
-            if loss.item() >= best_loss:
-                n_steps_without_improvement += 1
-                if n_steps_without_improvement >= patience:
-                    break
-            else:
-                best_loss = loss.item()
-                n_steps_without_improvement = 0
+            if it >= 100:
+                if loss.item() >= best_loss:
+                    n_steps_without_improvement += 1
+                    if n_steps_without_improvement >= patience:
+                        break
+                else:
+                    gamma_best = gamma_corrected
+                    best_loss = loss.item()
+                    n_steps_without_improvement = 0
 
-        print(f'Final loss: {info["loss"][-1]}')
+        if self.verbose:
+            print(f'Final loss: {info["loss"][-1]}')
 
-        R_corrected = gamma_corrected.cpu().data.numpy()
+        R_corrected = gamma_best.cpu().data.numpy()
         diff1 = np.abs((torch.sigmoid(gamma_logit) - R_atlas).cpu().data.numpy())
-        diff2 = np.abs(R_corrected[:n_known_tissues, :] - R_atlas.cpu().data.numpy())
-        for j in range(diff1.shape[0]):
-            d1 = np.mean(diff1[j, :]) * 100.
-            d2 = np.mean(diff2[j, :]) * 100.
-            # print(f'[MD] Avg. meth. diff. for atlas entity {j}: {d1} % -> {d2} %')
-            print(f'[MD] Avg. meth. diff. for atlas entity {j}: {d2} %')
-        print(f'[MD] Avg. atlas std: {np.mean(np.std(R_atlas.cpu().data.numpy(), axis=0))} -> '
-              f'{np.mean(np.std(R_corrected, axis=0))}')
+        diff2 = np.abs(R_corrected - R_atlas.cpu().data.numpy())
+        if self.verbose:
+            for j in range(diff1.shape[0]):
+                d1 = np.mean(diff1[j, :]) * 100.
+                d2 = np.mean(diff2[j, :]) * 100.
+                # print(f'[MD] Avg. meth. diff. for atlas entity {j}: {d1} % -> {d2} %')
+                print(f'[MD] Avg. meth. diff. for atlas entity {j}: {d2} %')
+            print(f'[MD] Avg. atlas std: {np.mean(np.std(R_atlas.cpu().data.numpy(), axis=0))} -> '
+                  f'{np.mean(np.std(R_corrected, axis=0))}')
 
         # print('TEST', np.median(np.nan_to_num((R_corrected - lb.cpu().data.numpy()) / (ub - lb).cpu().data.numpy(), nan=0.5)))
 
@@ -374,7 +400,7 @@ class MetDecode:
         weights_cfdna = self.compute_weights(D_cfdna)
 
         R_cfdna = M_cfdna / D_cfdna
-        alpha = MetDecode.nnls(self.R_atlas, R_cfdna, weights_cfdna, 0)
+        alpha = MetDecode.nnls(self.R_atlas, R_cfdna, weights_cfdna)
 
         return alpha
 

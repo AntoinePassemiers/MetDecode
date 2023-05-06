@@ -82,12 +82,6 @@ parser.add_argument(
     help='Number of unknown tissues to infer and add to the atlas'
 )
 parser.add_argument(
-    '-n-hidden',
-    type=int,
-    default=2,
-    help='Number of hidden neurons per neural network layer (modeling of unknowns only)'
-)
-parser.add_argument(
     '-maxit',
     type=int,
     default=2000,

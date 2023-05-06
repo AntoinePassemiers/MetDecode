@@ -4,6 +4,7 @@ from typing import Tuple
 
 import hyperopt
 import numpy as np
+from matplotlib import pyplot as plt
 from numpyencoder import NumpyEncoder
 from scipy.stats import pearsonr
 
@@ -14,10 +15,10 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 DATA_FOLDER = os.path.join(ROOT, 'data')
 ATLAS_FILEPATH = os.path.join(DATA_FOLDER, 'atlas_insil.tsv')
 
-ADD_UNKNOWN = True
+ADD_UNKNOWN = False
 
 
-def evaluate(dataset: str, params) -> Tuple[float, float, float]:
+def evaluate(dataset: str, params) -> float:
     reverse = False
     if dataset == 'br62':
         target_k = 0
@@ -58,7 +59,7 @@ def evaluate(dataset: str, params) -> Tuple[float, float, float]:
     M_atlas, D_atlas, cell_type_names, _ = load_input_file(ATLAS_FILEPATH)
     M_cfdna, D_cfdna, sample_names, _ = load_input_file(cfdna_filepath)
 
-    model = MetDecode(**params)
+    model = MetDecode(verbose=False, **params)
     model.fit(
         M_atlas,
         D_atlas,
@@ -82,6 +83,14 @@ def evaluate(dataset: str, params) -> Tuple[float, float, float]:
             lods.append(lod)
         return np.mean(lods)
 
+    with open(f'alpha-{dataset}.csv', 'w') as f:
+        f.write(','.join(['Sample'] + list(cell_type_names)) + '\n')
+        for i, sample_name in enumerate(sample_names):
+            f.write(sample_name)
+            for value in alpha[i, :]:
+                percentage = 100. * value
+                f.write(f',{percentage:.3f}')
+            f.write('\n')
 
     y_pred = np.asarray([
         alpha[:, 0],
@@ -100,49 +109,102 @@ def evaluate(dataset: str, params) -> Tuple[float, float, float]:
     mae = float(np.mean(np.abs(y_target_corrected - y_pred[target_k, ...])))
     lod = float(compute_average_lod(y_pred, y_target_corrected, target_k))
     corr = float(pearsonr(y_pred[target_k, ...].flatten(), y_target_corrected.flatten())[0])
+    unk_reg = 2 * np.mean(np.maximum(0, 100 * alpha[:, -1] - 15)) + 10 * np.mean(np.maximum(0, 5 - 100 * alpha[:, -1]))
+
+    print(f'Average unknown contribution: {100 * np.mean(alpha[:, -1])}')
 
     print(f'MAE: {mae}')
     print(f'LOD: {lod}')
     print(f'CORR: {corr}')
+    print(f'UNK_REG: {unk_reg}')
 
-    return mae, lod, corr
+    score = lod + 0.2 * unk_reg
+
+    return score
+
+
+def evaluate_cfdna(params) -> float:
+    cfdna_filepath = os.path.join(DATA_FOLDER, 'bothbatch.tims.txt')
+    M_atlas, D_atlas, cell_type_names, _ = load_input_file(ATLAS_FILEPATH)
+    M_cfdna, D_cfdna, sample_names, _ = load_input_file(cfdna_filepath)
+
+    model = MetDecode(verbose=False, **params)
+    model.fit(
+        M_atlas,
+        D_atlas,
+        M_cfdna,
+        D_cfdna,
+        n_unknown_tissues=int(ADD_UNKNOWN),
+        max_n_iter=2000
+    )
+    alpha = model.deconvolute(M_cfdna, D_cfdna)
+
+    y_pred = np.asarray([
+        alpha[:, 0],  # BRCA
+        alpha[:, 1] + alpha[:, 2],  # CER
+        alpha[:, 3] + alpha[:, 5],  # COLOR
+        alpha[:, 4]  # OV
+    ]) * 100
+
+    labels = np.zeros(len(y_pred))
+    labels[40:62] = 1
+    labels[62:69] = 3
+    labels[69:71] = 2
+    labels[71:78] = 4
+    labels[124:146] = 1
+    labels[146:153] = 3
+    labels[153:155] = 2
+    labels[155:162] = 4
+
+    mask = (np.argmax(y_pred, axis=0) != labels - 1)
+    loss = np.mean(np.max(y_pred, axis=0) * mask)
+
+    unk_reg = 2 * np.mean(np.maximum(0, 100 * alpha[:, -1] - 15)) + 10 * np.mean(np.maximum(0, 5 - 100 * alpha[:, -1]))
+
+    print(f'Average unknown contribution: {100 * np.mean(alpha[:, -1])}')
+
+    print(f'UNK_REG: {unk_reg}')
+    print(f'Loss: {loss}')
+
+    score = loss + 0.2 * unk_reg
+
+    return score
 
 
 def objective(params):
     losses = []
-    for dataset in ['br62', 'cer77', 'colo', 'ov33']:
-        mae, lod, _ = evaluate(dataset, params)
-        losses.append(lod)
-    loss = float(np.mean(losses))
-    with open('hp-results-unk1-new.txt', 'a') as f:
+    for dataset in ['ov33', 'br62', 'cer77', 'colo']:
+        losses.append(evaluate(dataset, params))
+    loss = float(np.mean(losses)) + evaluate_cfdna(params)
+    with open('hp-results.txt', 'a') as f:
         f.write(json.dumps({'loss': loss, 'params': params}, cls=NumpyEncoder) + '\n')
     return {'loss': loss, 'status': hyperopt.STATUS_OK}
 
 
 search_space = {
-    'max_correction': hyperopt.hp.uniform('max_correction', 0, 1),
+    'max_correction': hyperopt.hp.uniform('max_correction', 0.05, 1),
     'p': hyperopt.hp.uniform('p', 0, 2),
-    'lambda1': hyperopt.hp.loguniform('lambda1', -5, 5),
-    'lambda2': hyperopt.hp.loguniform('lambda2', -5, 5),
+    'lambda1': hyperopt.hp.loguniform('lambda1', -3, 3),
+    'lambda2': hyperopt.hp.loguniform('lambda2', -3, 3),
     'coverage_rcw': hyperopt.hp.choice('coverage_rcw', [False, True]),
     'multiplicative': hyperopt.hp.choice('multiplicative', [False, True]),
+    'z1': hyperopt.hp.uniform('z1', 0.0, 10.0),
+    'z2': hyperopt.hp.uniform('z2', 0.0, 1.0),
+    'alpha_weighting': hyperopt.hp.choice('alpha_weighting', [False, True]),
+    'std_weighting': hyperopt.hp.choice('std_weighting', [False, True]),
+    'unk_clip': hyperopt.hp.choice('unk_clip', [False, True]),
+    'unk_qt': hyperopt.hp.choice('unk_qt', [False, True]),
+    'unk_bound': hyperopt.hp.choice('unk_bound', [False, True]),
+    'unk_q': hyperopt.hp.uniform('unk_q', 0.01, 0.25),
 }
-if ADD_UNKNOWN:
-    search_space['n_hidden'] = hyperopt.hp.randint('n_hidden', 9)
 
+"""
 best_params = hyperopt.fmin(
     fn=objective,
     space=search_space,
     algo=hyperopt.tpe.suggest,
     max_evals=1000
 )
+"""
 
-"""
-lods, corrs = [], []
-for dataset in ['br62', 'cer77', 'colo', 'ov33', 'br66', 'cer81', 'colo45', 'ov79']:
-    _, lod, corr, = evaluate(dataset, {})
-    lods.append(lod)
-    corrs.append(corr)
-    print('LODS', lods)
-    print('CORRS', corrs)
-"""
+objective({})

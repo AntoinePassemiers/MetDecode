@@ -25,7 +25,7 @@ import torch
 
 class Optimizer:
 
-    def __init__(self, alpha_up=1.015, alpha_down=0.9, lr_lb=0, lr_ub=1e+5, verbose=False):
+    def __init__(self, alpha_up=1.01, alpha_down=0.9, lr_lb=0, lr_ub=1e+5, verbose=False):
         self.alpha_up = alpha_up
         self.alpha_down = alpha_down
         self.lr_lb = lr_lb

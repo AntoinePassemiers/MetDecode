@@ -15,8 +15,8 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 DATA_FOLDER = os.path.join(ROOT, 'data')
 ATLAS_FILEPATH = os.path.join(DATA_FOLDER, 'atlas_insil.tsv')
 
-ADD_UNKNOWN = False
-
+ADD_UNKNOWN = True
+MAX_N_ITER = 2000
 
 def evaluate(dataset: str, params) -> float:
     reverse = False
@@ -66,7 +66,7 @@ def evaluate(dataset: str, params) -> float:
         M_cfdna,
         D_cfdna,
         n_unknown_tissues=int(ADD_UNKNOWN),
-        max_n_iter=2000
+        max_n_iter=MAX_N_ITER
     )
     alpha = model.deconvolute(M_cfdna, D_cfdna)
 
@@ -76,6 +76,8 @@ def evaluate(dataset: str, params) -> float:
             idx = np.argmax(y_pred[:, i, :], axis=0)
             lod = 100
             for j in range(len(idx)):
+                if y_pred[idx[j], i, j] == 0:
+                    break
                 if idx[j] == target_k:
                     lod = y_target[i, j]
                 else:
@@ -111,6 +113,7 @@ def evaluate(dataset: str, params) -> float:
     corr = float(pearsonr(y_pred[target_k, ...].flatten(), y_target_corrected.flatten())[0])
     unk_reg = 2 * np.mean(np.maximum(0, 100 * alpha[:, -1] - 15)) + 10 * np.mean(np.maximum(0, 5 - 100 * alpha[:, -1]))
 
+
     print(f'Average unknown contribution: {100 * np.mean(alpha[:, -1])}')
 
     print(f'MAE: {mae}')
@@ -135,7 +138,7 @@ def evaluate_cfdna(params) -> float:
         M_cfdna,
         D_cfdna,
         n_unknown_tissues=int(ADD_UNKNOWN),
-        max_n_iter=2000
+        max_n_iter=MAX_N_ITER
     )
     alpha = model.deconvolute(M_cfdna, D_cfdna)
 
@@ -146,7 +149,7 @@ def evaluate_cfdna(params) -> float:
         alpha[:, 4]  # OV
     ]) * 100
 
-    labels = np.zeros(len(y_pred))
+    labels = np.zeros(y_pred.shape[1], dtype=int)
     labels[40:62] = 1
     labels[62:69] = 3
     labels[69:71] = 2
@@ -172,30 +175,29 @@ def evaluate_cfdna(params) -> float:
 
 
 def objective(params):
-    losses = []
-    for dataset in ['ov33', 'br62', 'cer77', 'colo']:
-        losses.append(evaluate(dataset, params))
-    loss = float(np.mean(losses)) + evaluate_cfdna(params)
-    with open('hp-results.txt', 'a') as f:
-        f.write(json.dumps({'loss': loss, 'params': params}, cls=NumpyEncoder) + '\n')
-    return {'loss': loss, 'status': hyperopt.STATUS_OK}
+    try:
+        losses = []
+        for dataset in ['ov33', 'br62', 'cer77', 'colo']:
+        # for dataset in ['br62', 'br66', 'cer77', 'cer81', 'colo45', 'colo', 'ov33', 'ov79']:
+            losses.append(evaluate(dataset, params))
+        loss = float(np.mean(losses)) + evaluate_cfdna(params)
+        with open('hp-results.txt', 'a') as f:
+            f.write(json.dumps({'loss': loss, 'params': params}, cls=NumpyEncoder) + '\n')
+        print(f'Total loss: {loss}')
+        return {'loss': loss, 'status': hyperopt.STATUS_OK}
+    except Exception as e:
+        return {'loss': np.inf, 'status': hyperopt.STATUS_FAIL, 'status_fail': str(e)}
 
 
 search_space = {
-    'max_correction': hyperopt.hp.uniform('max_correction', 0.05, 1),
-    'p': hyperopt.hp.uniform('p', 0, 2),
-    'lambda1': hyperopt.hp.loguniform('lambda1', -3, 3),
-    'lambda2': hyperopt.hp.loguniform('lambda2', -3, 3),
-    'coverage_rcw': hyperopt.hp.choice('coverage_rcw', [False, True]),
-    'multiplicative': hyperopt.hp.choice('multiplicative', [False, True]),
-    'z1': hyperopt.hp.uniform('z1', 0.0, 10.0),
-    'z2': hyperopt.hp.uniform('z2', 0.0, 1.0),
-    'alpha_weighting': hyperopt.hp.choice('alpha_weighting', [False, True]),
-    'std_weighting': hyperopt.hp.choice('std_weighting', [False, True]),
-    'unk_clip': hyperopt.hp.choice('unk_clip', [False, True]),
-    'unk_qt': hyperopt.hp.choice('unk_qt', [False, True]),
-    'unk_bound': hyperopt.hp.choice('unk_bound', [False, True]),
-    'unk_q': hyperopt.hp.uniform('unk_q', 0.01, 0.25),
+    'max_correction': hyperopt.hp.uniform('max_correction', 0.005, 1),
+    'p': hyperopt.hp.uniform('p', 0, 1),
+    'lambda1': hyperopt.hp.loguniform('lambda1', 0, 3),
+    'budget': hyperopt.hp.uniform('budget', 0.0, 0.02),
+    #'unk_clip': hyperopt.hp.choice('unk_clip', [False, True]),
+    #'unk_qt': hyperopt.hp.choice('unk_qt', [False, True]),
+    #'unk_bound': hyperopt.hp.choice('unk_bound', [False, True]),
+    'unk_q': hyperopt.hp.uniform('unk_q', 0.0, 0.05),
 }
 
 """

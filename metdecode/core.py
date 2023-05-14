@@ -18,88 +18,37 @@
 #  along with this program; if not, write to the Free Software
 #  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
 #  MA 02110-1301, USA.
-
 from typing import Tuple, Optional
 
 import numpy as np
 import torch
 import torch.nn.functional
 import tqdm
-from matplotlib import pyplot as plt
 from scipy.optimize import nnls
 from scipy.special import logit
-from sklearn.decomposition import PCA
 
 from metdecode.optimizer import Optimizer
-
-
-class BiasCorrection(torch.nn.Module):
-
-    def __init__(
-            self,
-            n_tissues: int,
-            n_markers: int,
-            multiplicative: bool,
-    ):
-        torch.nn.Module.__init__(self)
-        self.n_tissues: int = n_tissues
-        self.multiplicative: bool = multiplicative
-
-        self.tissue_bias = torch.nn.Parameter(torch.FloatTensor(np.random.normal(0, 0.01, size=n_tissues)))
-        self.marker_bias = torch.nn.Parameter(torch.FloatTensor(np.random.normal(0, 0.01, size=n_markers)))
-
-    def forward(self, R_logit: torch.Tensor) -> torch.Tensor:
-
-        # Atlas correction
-        if self.multiplicative:
-            bias_logit = self.marker_bias.unsqueeze(0) * self.tissue_bias.unsqueeze(1)
-            R_corrected = torch.sigmoid(R_logit + bias_logit)
-        else:
-            R_corrected = torch.sigmoid(R_logit) ** (1. + self.tissue_bias.unsqueeze(1))
-
-        return R_corrected
-
-    @staticmethod
-    def init_weights(m):
-        if isinstance(m, torch.nn.Linear):
-            if m.weight.size()[1] == 1:
-                torch.nn.init.xavier_uniform(m.weight)
-            else:
-                torch.nn.init.kaiming_uniform_(m.weight, nonlinearity='tanh')
-            m.bias.data.fill_(0.0001)
 
 
 class MetDecode:
 
     def __init__(
             self,
-            max_correction: float = 0.1,
-            p: float = 1.0,
-            lambda1: float = 0.001,
-            lambda2: float = 0.001,
-            coverage_rcw: bool = False,
-            multiplicative: bool = False,
-            z1: float = 1.0,
-            z2: float = 0.1,
-            alpha_weighting: bool = True,
-            std_weighting: bool = True,
+            max_correction: float = 0.7384,
+            p: float = 0.287,
+            budget: float = 0.00037,
+            lambda1: float = 8.9,
             unk_clip: bool = True,
-            unk_qt: bool = True,
+            unk_qt: bool = False,
             unk_bound: bool = False,
-            unk_q: float = 0.05,
+            unk_q: float = 0.015,
             init_unk_prop: float = 0.1,
             verbose: bool = True
     ):
         self.max_correction: float = max_correction
         self.p: float = p
+        self.budget: float = budget
         self.lambda1: float = lambda1
-        self.lambda2: float = lambda2
-        self.coverage_rcw: bool = coverage_rcw
-        self.multiplicative: bool = multiplicative
-        self.z1: float = z1
-        self.z2: float = z2
-        self.alpha_weighting: bool = alpha_weighting
-        self.std_weighting: bool = std_weighting
         self.unk_clip: bool = unk_clip
         self.unk_qt: bool = unk_qt
         self.unk_bound: bool = unk_bound
@@ -191,25 +140,23 @@ class MetDecode:
         n_known = R_atlas.shape[0]
 
         # Bounds on the unknown tissues
-        lb = np.min(R_atlas, axis=0) - 1e-4
-        ub = np.max(R_atlas, axis=0) + 1e-4
+        lb = np.clip(np.min(R_atlas, axis=0) - 1e-4, 0.01, 0.99)
+        ub = np.clip(np.max(R_atlas, axis=0) + 1e-4, 0.01, 0.99)
 
         # Adding unknown tissues to the atlas
         if n_unknowns > 0:
             for _ in range(n_unknowns):
                 alpha_hat = MetDecode.nnls(R_atlas, R_cfdna, W_cfdna)
-                residuals = np.mean(np.dot(alpha_hat, R_atlas) - R_cfdna, axis=0)
+                R_reconstructed = np.dot(alpha_hat, R_atlas)
+                unk_prop = self.unk_q
+                residuals = np.median(R_cfdna - (1. - unk_prop) * R_reconstructed, axis=0)
 
-                unk = 1. - residuals
-                if self.unk_bound:
-                    unk = (unk >= 0).astype(float) * (1.0 - 2 * self.unk_q) + self.unk_q
-                    unk = lb + unk * (ub - lb)
+                unk = residuals / unk_prop
                 if self.unk_qt:
                     unk = MetDecode.quantile_transform(unk, np.median(R_atlas, axis=0))
+                # unk = MetDecode.quantile_transform(np.median(R_atlas, axis=0), unk)
                 if self.unk_clip:
                     unk = np.clip(unk, lb, ub)
-                else:
-                    unk = np.clip(unk, 0, 1)
 
                 R_atlas = np.concatenate((R_atlas, unk[np.newaxis, :]), axis=0)
 
@@ -226,12 +173,11 @@ class MetDecode:
         alpha_hat /= np.sum(alpha_hat, axis=1)[:, np.newaxis]
         alpha_logit = np.log(alpha_hat)
         gamma_logit = logit(R_atlas)
+
         return alpha_logit, gamma_logit
 
     def compute_weights(self, depths: np.ndarray) -> np.ndarray:
         depths = np.clip(depths, 0, 200)
-        if self.coverage_rcw:
-            depths = MetDecode.rcw(depths)
         depths = depths ** self.p
         return depths / np.sum(depths)
 
@@ -241,6 +187,7 @@ class MetDecode:
             D_atlas: np.ndarray,
             M_cfdna: np.ndarray,
             D_cfdna: np.ndarray,
+            alpha_bounds: Optional[np.ndarray] = None,
             n_unknown_tissues: int = 0,
             max_n_iter: int = 2000,
             patience: int = 100
@@ -257,13 +204,8 @@ class MetDecode:
         R_atlas = torch.FloatTensor(M_atlas / D_atlas)
         R_cfdna = torch.FloatTensor(M_cfdna / D_cfdna)
 
-        pca = PCA()
-        coords = pca.fit_transform(R_atlas)
-        plt.scatter(coords[:6, 0], coords[:6, 1], color='blue', marker='x')
-        plt.scatter(coords[6:, 0], coords[6:, 1], color='blue', marker='o')
-        coords = pca.transform(R_cfdna)
-        plt.scatter(coords[:, 0], coords[:, 1], color='orange')
-        plt.show()
+        if alpha_bounds is not None:
+            alpha_bounds = torch.FloatTensor(alpha_bounds)
 
         # Store atlas depths, extend matrix to account for unknown entities
         self.D_atlas = D_atlas
@@ -292,8 +234,6 @@ class MetDecode:
             lb = torch.clamp(R_atlas - mc, 0, 1)  # Lower bounds
             ub = torch.clamp(R_atlas + mc, 0, 1)  # Upper bounds
 
-        bias_correction = BiasCorrection(n_tissues, D_cfdna.shape[1], self.multiplicative)
-
         if self.verbose:
             print(f'[MD] Unknown tissues    : {n_unknown_tissues}')
             print(f'[MD] Maximum correction : {self.max_correction}')
@@ -310,7 +250,6 @@ class MetDecode:
         optimizer = Optimizer(verbose=False)
         optimizer.add([alpha_logit], 1e-2)
         optimizer.add([gamma_logit], 1e-3)
-        optimizer.add(list(bias_correction.parameters()), 1e-3)
 
         n_steps_without_improvement = 0
         best_loss = np.inf
@@ -319,32 +258,24 @@ class MetDecode:
             optimizer.zero_grad()
 
             alpha = torch.softmax(alpha_logit, dim=1)
-            gamma = torch.sigmoid(gamma_logit)
+            # gamma = torch.sigmoid(gamma_logit)
 
             # Bias correction on atlas
-            gamma_corrected = bias_correction.forward(gamma_logit)
+            gamma_corrected = torch.sigmoid(gamma_logit)
+            # gamma_corrected = bias_correction.forward(gamma_logit)
             gamma_corrected = torch.clamp(gamma_corrected, lb, ub)
 
             # Methylation ratios should stay close to the original atlas
-            w = weights_atlas
-            if self.alpha_weighting:
-                w = w * (self.z1 + n_tissues * torch.mean(alpha, dim=0).unsqueeze(1))
-            if self.std_weighting:
-                w = w / torch.clamp(torch.std(R_atlas, dim=0), self.z2).unsqueeze(0)
-            w = w / torch.sum(w)
-            g2 = torch.max(w * ((gamma - R_atlas) ** 2))
+            # g2 = torch.max(torch.mean(torch.abs(R_atlas - gamma_corrected), dim=1))
+            g2 = torch.max(torch.square(torch.mean(torch.abs(R_atlas - gamma_corrected), dim=1) - self.budget))
 
             # Reconstruction error of patients' profiles.
             # cfDNA profiles are reconstructed based on the corrected atlas
             R_reconstructed = torch.mm(alpha, gamma_corrected)
-            g1 = torch.max(weights_cfdna * ((R_reconstructed - R_cfdna) ** 2))
-
-            # Regularisation on the bias terms
-            u_l2 = torch.mean(bias_correction.tissue_bias ** 2)
-            v_l2 = torch.mean(bias_correction.marker_bias ** 2)
+            g1 = torch.sum(weights_cfdna * ((R_reconstructed - R_cfdna) ** 2))
 
             # Overall loss function
-            loss = g1 + self.lambda1 * g2 + self.lambda2 * (u_l2 + v_l2)
+            loss = g1 + self.lambda1 * g2
 
             # Gradient backpropagation
             loss.backward()
@@ -372,6 +303,7 @@ class MetDecode:
         R_corrected = gamma_best.cpu().data.numpy()
         diff1 = np.abs((torch.sigmoid(gamma_logit) - R_atlas).cpu().data.numpy())
         diff2 = np.abs(R_corrected - R_atlas.cpu().data.numpy())
+        print(np.mean(np.abs(diff2), axis=1))
         if self.verbose:
             for j in range(diff1.shape[0]):
                 d1 = np.mean(diff1[j, :]) * 100.

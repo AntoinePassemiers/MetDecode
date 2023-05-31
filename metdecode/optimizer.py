@@ -37,13 +37,13 @@ class Optimizer:
         self.cursor = 0
         self.last_loss = np.inf
 
-    def add(self, param, lr):
+    def add(self, param, lr, weight_decay: float = 0.0):
         params = [{
             'params': param,
             'lr': lr
         }]
         self.parameters.append(params[0])
-        self.optimizers.append(torch.optim.Adam(params, lr=lr))
+        self.optimizers.append(torch.optim.Adam(params, lr=lr, weight_decay=weight_decay))
 
     def zero_grad(self):
         for optimizer in self.optimizers:

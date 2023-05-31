@@ -19,14 +19,16 @@
 #  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
 #  MA 02110-1301, USA.
 
-import os
 import argparse
+import os
 
 import numpy as np
 
-from metdecode.core import MetDecode
 from metdecode.io import load_input_file, save_counts
+from metdecode.model import Model
 from metdecode.utils import bounded_float_type
+
+# Example: python3 correct.py data/atlas_insil.tsv data/insil120_cer77.txt data/atlas-corrected.tsv -n-unknown-tissues 1
 
 # Argument parser
 parser = argparse.ArgumentParser()
@@ -48,44 +50,26 @@ parser.add_argument(
 parser.add_argument(
     '-p',
     type=bounded_float_type(lb=0),
-    default=0.97,
+    default=0.5,
     help='Importance of coverage'
 )
 parser.add_argument(
     '-lambda1',
     type=bounded_float_type(lb=0),
-    default=4.42,
+    default=0.5,
     help='Regularisation on the gamma matrix'
 )
 parser.add_argument(
     '-lambda2',
     type=bounded_float_type(lb=0),
-    default=0.0067,
+    default=0.01,
     help='Regularisation on the bias terms'
-)
-parser.add_argument(
-    '-max-correction',
-    type=bounded_float_type(lb=0, ub=1.0),
-    default=0.808,
-    help='Maximum correction for each methylation ratio'
-)
-parser.add_argument(
-    '-additive',
-    default=False,
-    action='store_true',
-    help='Whether to perform multiplicative bias correction instead of additive correction'
 )
 parser.add_argument(
     '-n-unknown-tissues',
     type=int,
     default=0,
     help='Number of unknown tissues to infer and add to the atlas'
-)
-parser.add_argument(
-    '-maxit',
-    type=int,
-    default=2000,
-    help='Maximum number of iterations per correction module (correction only)'
 )
 args = parser.parse_args()
 
@@ -109,12 +93,16 @@ n_unknown_tissues = int(getattr(args, 'n_unknown_tissues'))
 
 # Parse input files
 M_atlas, D_atlas, entity_names, marker_names = load_input_file(ATLAS_FILEPATH)
-M_cfdna, D_cfdna, _, marker_names2 = load_input_file(CFDNA_FILEPATH)
+M_cfdna, D_cfdna, sample_names, marker_names2 = load_input_file(CFDNA_FILEPATH)
 for marker1, marker2 in zip(marker_names, marker_names2):
     marker1 = marker1.split('-')
     marker2 = marker2.split('-')
     if (marker1[0] != marker2[0]) or (marker1[1] != marker2[1]):
         raise ValueError(f'Marker regions differ in the two input files: {marker1} and {marker2}')
+n_samples = len(M_cfdna)
+n_known_tissues = len(M_atlas)
+n_tissues = n_known_tissues + n_unknown_tissues
+n_markers = M_cfdna.shape[1]
 
 # Do a few checks
 assert(np.less_equal(M_cfdna, D_cfdna).all())
@@ -127,22 +115,32 @@ print('Number of cfDNA profiles       : %i' % M_cfdna.shape[0])
 print('Number of tissues in the atlas : %i' % M_atlas.shape[0])
 print('Number of markers              : %i' % M_atlas.shape[1])
 
-model = MetDecode(
+
+model = Model(
     p=args.p,
     lambda1=args.lambda1,
-    lambda2=args.lambda2,
-    max_correction=args.max_correction,
-    multiplicative=(not args.additive),
-    n_hidden=args.n_hidden
+    lambda2=args.lambda2
 )
-model.fit(
+alpha = model.fit(
     M_atlas,
     D_atlas,
     M_cfdna,
     D_cfdna,
     n_unknown_tissues=n_unknown_tissues,
-    max_n_iter=getattr(args, 'maxit')
+    infer=True
 )
+
+# Results are stored in Alpha_hat,
+# where Alpha_hat[i, j] is the contribution of tissue j
+# in cfDNA profile i
+with open('out.txt', 'w') as f:
+    f.write(','.join(['Sample'] + list(entity_names)) + '\n')
+    for i, sample_name in enumerate(sample_names):
+        f.write(sample_name)
+        for value in alpha[i, :]:
+            percentage = 100. * value
+            f.write(f',{percentage:.3f}')
+        f.write('\n')
 
 entity_names = list(entity_names)
 for j in range(n_unknown_tissues):

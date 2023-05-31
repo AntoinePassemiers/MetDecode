@@ -2,12 +2,16 @@ import argparse
 import os
 
 import numpy as np
+from metdecode.utils import bounded_float_type
 
-from metdecode.core import MetDecode
 from metdecode.io import load_input_file
 
 
 # Argument parser
+from metdecode.model import Model
+
+# Example: python3 deconvolute.py data/atlas-corrected.tsv data/insil120_cer77.txt out.txt
+
 parser = argparse.ArgumentParser()
 parser.add_argument(
     'atlas-filepath',
@@ -27,8 +31,20 @@ parser.add_argument(
 parser.add_argument(
     '-p',
     type=float,
-    default=0.97,
+    default=0.5,
     help='Importance of coverage'
+)
+parser.add_argument(
+    '-lambda1',
+    type=bounded_float_type(lb=0),
+    default=0.5,
+    help='Regularisation on the gamma matrix'
+)
+parser.add_argument(
+    '-lambda2',
+    type=bounded_float_type(lb=0),
+    default=0.01,
+    help='Regularisation on the bias terms'
 )
 args = parser.parse_args()
 
@@ -67,7 +83,11 @@ print('Number of cfDNA profiles       : %i' % M_cfdna.shape[0])
 print('Number of tissues in the atlas : %i' % M_atlas.shape[0])
 print('Number of markers              : %i' % M_atlas.shape[1])
 
-model = MetDecode(p=args.p)
+model = Model(
+    p=args.p,
+    lambda1=args.lambda1,
+    lambda2=args.lambda2
+)
 model.set_atlas(M_atlas, D_atlas)
 alpha = model.deconvolute(M_cfdna, D_cfdna)
 

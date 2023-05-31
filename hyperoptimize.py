@@ -1,22 +1,28 @@
-import json
 import os
-from typing import Tuple
 
 import hyperopt
 import numpy as np
-from matplotlib import pyplot as plt
-from numpyencoder import NumpyEncoder
 from scipy.stats import pearsonr
 
 from metdecode.io import load_input_file
-from metdecode.core import MetDecode
+from metdecode.model import Model
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 DATA_FOLDER = os.path.join(ROOT, 'data')
 ATLAS_FILEPATH = os.path.join(DATA_FOLDER, 'atlas_insil.tsv')
 
 ADD_UNKNOWN = True
-MAX_N_ITER = 2000
+
+
+def compute_reg_loss(alpha: np.ndarray) -> float:
+
+    loss = np.mean(np.maximum(0, 100 * alpha[:, -1] - 15)) + 5 * np.mean(np.maximum(0, 5 - 100 * alpha[:, -1]))
+
+    # target_mu = np.asarray([0.05651396, 0.15084027, 0.06981952, 0.03278167, 0.08573908, 0.04916338, 0.54163744]) * 100
+    # target_sigma = np.asarray([0.03092762, 0.04793517, 0.03413288, 0.02384947, 0.03749949, 0.02895841, 0.06673595]) * 100
+
+    return loss
+
 
 def evaluate(dataset: str, params) -> float:
     reverse = False
@@ -59,16 +65,17 @@ def evaluate(dataset: str, params) -> float:
     M_atlas, D_atlas, cell_type_names, _ = load_input_file(ATLAS_FILEPATH)
     M_cfdna, D_cfdna, sample_names, _ = load_input_file(cfdna_filepath)
 
-    model = MetDecode(verbose=False, **params)
-    model.fit(
+    assert len(cell_type_names) == len(M_atlas)
+    assert len(cell_type_names) == len(D_atlas)
+
+    model = Model(**params)
+    alpha = model.fit(
         M_atlas,
         D_atlas,
         M_cfdna,
         D_cfdna,
-        n_unknown_tissues=int(ADD_UNKNOWN),
-        max_n_iter=MAX_N_ITER
+        n_unknown_tissues=int(ADD_UNKNOWN)
     )
-    alpha = model.deconvolute(M_cfdna, D_cfdna)
 
     def compute_average_lod(y_pred, y_target, target_k):
         lods = []
@@ -111,8 +118,8 @@ def evaluate(dataset: str, params) -> float:
     mae = float(np.mean(np.abs(y_target_corrected - y_pred[target_k, ...])))
     lod = float(compute_average_lod(y_pred, y_target_corrected, target_k))
     corr = float(pearsonr(y_pred[target_k, ...].flatten(), y_target_corrected.flatten())[0])
-    unk_reg = 2 * np.mean(np.maximum(0, 100 * alpha[:, -1] - 15)) + 10 * np.mean(np.maximum(0, 5 - 100 * alpha[:, -1]))
 
+    unk_reg = compute_reg_loss(alpha)
 
     print(f'Average unknown contribution: {100 * np.mean(alpha[:, -1])}')
 
@@ -121,7 +128,7 @@ def evaluate(dataset: str, params) -> float:
     print(f'CORR: {corr}')
     print(f'UNK_REG: {unk_reg}')
 
-    score = lod + 0.2 * unk_reg
+    score = lod + 0.05 * unk_reg
 
     return score
 
@@ -129,18 +136,28 @@ def evaluate(dataset: str, params) -> float:
 def evaluate_cfdna(params) -> float:
     cfdna_filepath = os.path.join(DATA_FOLDER, 'bothbatch.tims.txt')
     M_atlas, D_atlas, cell_type_names, _ = load_input_file(ATLAS_FILEPATH)
+    M_atlas = M_atlas[:-1, :]
+    D_atlas = D_atlas[:-1, :]
+    cell_type_names = cell_type_names[:-1]
     M_cfdna, D_cfdna, sample_names, _ = load_input_file(cfdna_filepath)
 
-    model = MetDecode(verbose=False, **params)
-    model.fit(
+    model = Model(**params)
+    alpha = model.fit(
         M_atlas,
         D_atlas,
         M_cfdna,
         D_cfdna,
-        n_unknown_tissues=int(ADD_UNKNOWN),
-        max_n_iter=MAX_N_ITER
+        n_unknown_tissues=int(ADD_UNKNOWN)
     )
-    alpha = model.deconvolute(M_cfdna, D_cfdna)
+
+    with open(f'alpha.csv', 'w') as f:
+        f.write(','.join(['Sample'] + list(cell_type_names)) + '\n')
+        for i, sample_name in enumerate(sample_names):
+            f.write(sample_name)
+            for value in alpha[i, :]:
+                percentage = 100. * value
+                f.write(f',{percentage:.3f}')
+            f.write('\n')
 
     y_pred = np.asarray([
         alpha[:, 0],  # BRCA
@@ -159,48 +176,65 @@ def evaluate_cfdna(params) -> float:
     labels[153:155] = 2
     labels[155:162] = 4
 
-    mask = (np.argmax(y_pred, axis=0) != labels - 1)
-    loss = np.mean(np.max(y_pred, axis=0) * mask)
+    error = 0
+    losses = []
+    for i in range(len(labels)):
+        if labels[i] > 0:
+            if np.argmax(y_pred[:, i]) != labels[i] - 1:
+                error += 1
+            losses.append(np.mean(y_pred[:, i]))
+        else:
+            mask = np.ones(4, dtype=bool)
+            mask[labels[i] - 1] = False
+            losses.append(np.mean(y_pred[mask, i]) - y_pred[labels[i] - 1, i])
+    loss = np.mean(losses)
 
-    unk_reg = 2 * np.mean(np.maximum(0, 100 * alpha[:, -1] - 15)) + 10 * np.mean(np.maximum(0, 5 - 100 * alpha[:, -1]))
+    unk_reg = compute_reg_loss(alpha)
 
     print(f'Average unknown contribution: {100 * np.mean(alpha[:, -1])}')
 
     print(f'UNK_REG: {unk_reg}')
     print(f'Loss: {loss}')
+    print(f'ERROR: {error}')
 
-    score = loss + 0.2 * unk_reg
+    score = loss + 0.05 * unk_reg
 
     return score
 
 
 def objective(params):
     try:
+        loss = evaluate_cfdna(params)
         losses = []
         for dataset in ['ov33', 'br62', 'cer77', 'colo']:
-        # for dataset in ['br62', 'br66', 'cer77', 'cer81', 'colo45', 'colo', 'ov33', 'ov79']:
+            # for dataset in ['br62', 'cer77', 'colo', 'ov33', 'br66', 'cer81', 'colo45', 'ov79']:
             losses.append(evaluate(dataset, params))
-        loss = float(np.mean(losses)) + evaluate_cfdna(params)
-        with open('hp-results.txt', 'a') as f:
-            f.write(json.dumps({'loss': loss, 'params': params}, cls=NumpyEncoder) + '\n')
+        loss += float(np.mean(losses))
         print(f'Total loss: {loss}')
         return {'loss': loss, 'status': hyperopt.STATUS_OK}
     except Exception as e:
+        print(e)
+        raise e
         return {'loss': np.inf, 'status': hyperopt.STATUS_FAIL, 'status_fail': str(e)}
 
 
 search_space = {
-    'max_correction': hyperopt.hp.uniform('max_correction', 0.005, 1),
     'p': hyperopt.hp.uniform('p', 0, 1),
-    'lambda1': hyperopt.hp.loguniform('lambda1', 0, 3),
-    'budget': hyperopt.hp.uniform('budget', 0.0, 0.02),
-    #'unk_clip': hyperopt.hp.choice('unk_clip', [False, True]),
-    #'unk_qt': hyperopt.hp.choice('unk_qt', [False, True]),
-    #'unk_bound': hyperopt.hp.choice('unk_bound', [False, True]),
-    'unk_q': hyperopt.hp.uniform('unk_q', 0.0, 0.05),
+    'lts_ratio': hyperopt.hp.uniform('lts_ratio', 0, 1),
+    'cta_ratio': hyperopt.hp.uniform('cta_ratio', 0, 1),
+    'cta_type': hyperopt.hp.choice('cta_type', ['perm', 'ot']),
+    'lambda1': hyperopt.hp.loguniform('lambda1', -1, 2),
+    'lambda2': hyperopt.hp.loguniform('lambda2', -1, 2),
+    'obs_criterion': hyperopt.hp.choice('obs_criterion', ['l1', 'l2', 'eps-svr']),
+    'ref_criterion': hyperopt.hp.choice('ref_criterion', ['l1', 'l2', 'eps-svr']),
+    'obs_criterion_eps': hyperopt.hp.loguniform('obs_criterion_eps', -5, 0),
+    'ref_criterion_eps': hyperopt.hp.loguniform('ref_criterion_eps', -5, 0),
+    'obs_criterion_nu': hyperopt.hp.uniform('obs_criterion_nu', 0, 1),
+    'ref_criterion_nu': hyperopt.hp.uniform('ref_criterion_nu', 0, 1),
 }
 
 """
+        losses = []
 best_params = hyperopt.fmin(
     fn=objective,
     space=search_space,
@@ -209,4 +243,10 @@ best_params = hyperopt.fmin(
 )
 """
 
+#search_space = SearchSpace(15, **search_space)
+#opt = EvolutionaryOptimizer(pop_size=20, partition_size=5, n_iter=10000)
+#opt.run(objective, search_space)
+
 objective({})
+
+print('Finished')

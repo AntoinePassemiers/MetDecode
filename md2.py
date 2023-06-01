@@ -2,14 +2,14 @@ import argparse
 import os
 
 import numpy as np
-from metdecode.utils import bounded_float_type
 
+from metdecode.utils import bounded_float_type
 from metdecode.io import load_input_file
 from metdecode.model import Model
+from metdecode.md2 import MetDecodeV2
 
-# Example: python3 deconvolute.py data/atlas-corrected.tsv data/insil120_cer77.txt out.txt
+# Example: python3 md2.py data/atlas.tsv data/insil120_cer77.txt out.txt
 
-# Argument parser
 parser = argparse.ArgumentParser()
 parser.add_argument(
     'atlas-filepath',
@@ -27,22 +27,15 @@ parser.add_argument(
     help='Where to write the deconvolution results as CSV file (e.g. alpha.csv)'
 )
 parser.add_argument(
-    '-p',
-    type=float,
-    default=0.5,
-    help='Importance of coverage'
+    '-n-unknown-tissues',
+    type=int,
+    default=0,
+    help='Number of unknown tissues to infer and add to the atlas'
 )
 parser.add_argument(
-    '-lambda1',
-    type=bounded_float_type(lb=0),
-    default=0.5,
-    help='Regularisation on the gamma matrix'
-)
-parser.add_argument(
-    '-lambda2',
-    type=bounded_float_type(lb=0),
-    default=0.01,
-    help='Regularisation on the bias terms'
+    '-correction',
+    action='store_true',
+    help='Whether to perform atlas correction'
 )
 args = parser.parse_args()
 
@@ -81,13 +74,8 @@ print('Number of cfDNA profiles       : %i' % M_cfdna.shape[0])
 print('Number of tissues in the atlas : %i' % M_atlas.shape[0])
 print('Number of markers              : %i' % M_atlas.shape[1])
 
-model = Model(
-    p=args.p,
-    lambda1=args.lambda1,
-    lambda2=args.lambda2
-)
-model.set_atlas(M_atlas, D_atlas)
-alpha = model.deconvolute(M_cfdna, D_cfdna)
+model = MetDecodeV2(M_atlas, D_atlas, M_cfdna, D_cfdna, n_unknown_tissues=args.n_unknown_tissues, correction=args.correction)
+alpha = model.deconvolute()
 
 # Results are stored in Alpha_hat,
 # where Alpha_hat[i, j] is the contribution of tissue j

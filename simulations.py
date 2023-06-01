@@ -29,6 +29,7 @@ from metdecode.io import load_input_file
 from scipy.special import expit
 
 from metdecode.evaluation import Evaluation
+from metdecode.md2 import MetDecodeV2
 from metdecode.model import Model
 
 
@@ -69,6 +70,7 @@ def wgbs_to_em(gamma, bias_func, noisy=True):
         sfs = np.random.rand(1, gamma.shape[1])
         var = wgbs_var_func(gamma)
         var = np.clip(var, 0.001, 0.999 * mean * (1. - mean))
+        var = var * 0.5  # TODO
         tmp = ((mean * (1. - mean)) / var - 1.)
         alpha = mean * tmp
         beta = (1. - mean) * tmp
@@ -134,13 +136,13 @@ def generate_mix_dataset(n_profiles: int = 48, n_tissues: int = 13, n_known_tiss
         gamma_distorted = gamma
         gamma_prime_clean = gamma
 
-    coverage_factor = 1
-    R_methylated = np.random.binomial(R_depths * coverage_factor, gamma_distorted)
-    X_methylated = np.random.binomial(X_depths * coverage_factor, np.dot(alpha, gamma), size=(n_profiles, R_depths.shape[1]))
-    R_methylated = np.round(R_methylated / coverage_factor).astype(int)
-    X_methylated = np.round(X_methylated / coverage_factor).astype(int)
-    # R_methylated = np.round(R_depths * gamma_distorted).astype(int)
-    # X_methylated = np.round(X_depths * np.dot(alpha, gamma)).astype(int)
+    #coverage_factor = 1
+    #R_methylated = np.random.binomial(R_depths * coverage_factor, gamma_distorted)
+    #X_methylated = np.random.binomial(X_depths * coverage_factor, np.dot(alpha, gamma), size=(n_profiles, R_depths.shape[1]))
+    #R_methylated = np.round(R_methylated / coverage_factor).astype(int)
+    #X_methylated = np.round(X_methylated / coverage_factor).astype(int)
+    R_methylated = np.round(R_depths * gamma_distorted).astype(int)
+    X_methylated = np.round(X_depths * np.dot(alpha, gamma)).astype(int)
 
     assert R_methylated.shape[1] == n_markers
     assert R_depths.shape[1] == n_markers
@@ -190,20 +192,28 @@ def evaluate(dataset: dict, evaluation: Evaluation, exp_id: str):
         dataset['X-depths'],
     ]
 
-    METHOD_NAMES = ['metdecode2-nocorrection', 'metdecode2']
+    METHOD_NAMES = ['metdecode2-nocorrection', 'metdecode2', 'metdecode-nocorrection', 'metdecode']
 
     for method_name in METHOD_NAMES:
 
         print(f'Running method "{method_name}"')
 
         gamma_hat = dataset['Gamma-prime-noisy']
-        if method_name == 'metdecode2-nocorrection':
+        if method_name == 'metdecode-nocorrection':
             model = Model()
             Alpha_hat = model.fit(*args, n_unknown_tissues=1, infer=False)
             gamma_hat = model.R_atlas
-        elif method_name == 'metdecode2':
+        elif method_name == 'metdecode':
             model = Model()
             Alpha_hat = model.fit(*args, n_unknown_tissues=1, infer=True)
+            gamma_hat = model.R_atlas
+        elif method_name == 'metdecode2-nocorrection':
+            model = MetDecodeV2(*args, n_unknown_tissues=1, correction=False)
+            Alpha_hat = model.deconvolute()
+            gamma_hat = model.R_atlas
+        elif method_name == 'metdecode2':
+            model = MetDecodeV2(*args, n_unknown_tissues=1, correction=True)
+            Alpha_hat = model.deconvolute()
             gamma_hat = model.R_atlas
         else:
             raise NotImplementedError(f'Unknown method "{method_name}"')
@@ -237,10 +247,10 @@ if __name__ == '__main__':
         'slateblue', 'mediumvioletred', 'goldenrod', 'darkseagreen'
     ]
     # pretty_names = ['NNLS', 'CelFiE', 'MetDecode']
-    pretty_names = ['MetDecode (no correction)', 'MetDecode']
+    pretty_names = ['MetDecode V2 (no correction)', 'MetDecode V2', 'MetDecode (no correction)', 'MetDecode']
 
     # methods = ['nnls', 'celfie', 'metdecodeV4']
-    methods = ['metdecode2-nocorrection', 'metdecode2']
+    methods = ['metdecode2-nocorrection', 'metdecode2', 'metdecode-nocorrection', 'metdecode']
 
     cell_type_names = [
         'BRCA', 'CEAD+CESC', 'COAD', 'OV', 'READ', 'B cell', 'CD4+ T-cell', 'CD8+ T-cell',

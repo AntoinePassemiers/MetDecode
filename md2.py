@@ -8,7 +8,7 @@ from metdecode.io import load_input_file
 from metdecode.model import Model
 from metdecode.md2 import MetDecodeV2
 
-# Example: python3 md2.py data/atlas.tsv data/insil120_cer77.txt out.txt
+# Example: python3 md2.py data/atlas.tsv data/insil120_cer77.txt out.txt -n-unknown-tissues 1
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
@@ -81,7 +81,7 @@ alpha = model.deconvolute()
 # where Alpha_hat[i, j] is the contribution of tissue j
 # in cfDNA profile i
 with open(OUT_FILEPATH, 'w') as f:
-    f.write(','.join(['Sample'] + list(cell_type_names)) + '\n')
+    f.write(','.join(['Sample'] + list(cell_type_names) + [f'Unknown{i + 1}' for i in range(args.n_unknown_tissues)]) + '\n')
     for i, sample_name in enumerate(sample_names):
         f.write(sample_name)
         for value in alpha[i, :]:

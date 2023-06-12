@@ -5,6 +5,7 @@ import numpy as np
 from scipy.stats import pearsonr
 
 from metdecode.io import load_input_file
+from metdecode.md2 import MetDecodeV2
 from metdecode.model import Model
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -12,6 +13,7 @@ DATA_FOLDER = os.path.join(ROOT, 'data')
 ATLAS_FILEPATH = os.path.join(DATA_FOLDER, 'atlas_insil.tsv')
 
 ADD_UNKNOWN = True
+USE_MD2 = False
 
 
 def compute_reg_loss(alpha: np.ndarray) -> float:
@@ -68,14 +70,21 @@ def evaluate(dataset: str, params) -> float:
     assert len(cell_type_names) == len(M_atlas)
     assert len(cell_type_names) == len(D_atlas)
 
-    model = Model(**params)
-    alpha = model.fit(
-        M_atlas,
-        D_atlas,
-        M_cfdna,
-        D_cfdna,
-        n_unknown_tissues=int(ADD_UNKNOWN)
-    )
+    if USE_MD2:
+        model = MetDecodeV2(M_atlas,
+            D_atlas,
+            M_cfdna,
+            D_cfdna,n_unknown_tissues=1, correction=True)
+        alpha = model.deconvolute()
+    else:
+        model = Model(**params)
+        alpha = model.fit(
+            M_atlas,
+            D_atlas,
+            M_cfdna,
+            D_cfdna,
+            n_unknown_tissues=int(ADD_UNKNOWN)
+        )
 
     def compute_average_lod(y_pred, y_target, target_k):
         lods = []
@@ -206,8 +215,9 @@ def objective(params):
     try:
         loss = evaluate_cfdna(params)
         losses = []
-        for dataset in ['ov33', 'br62', 'cer77', 'colo']:
-            # for dataset in ['br62', 'cer77', 'colo', 'ov33', 'br66', 'cer81', 'colo45', 'ov79']:
+        # for dataset in ['ov33', 'br62', 'cer77', 'colo']:
+        # for dataset in ['br62', 'cer77', 'colo', 'ov33', 'br66', 'cer81', 'colo45', 'ov79']:
+        for dataset in ['cer77']:
             losses.append(evaluate(dataset, params))
         loss += float(np.mean(losses))
         print(f'Total loss: {loss}')

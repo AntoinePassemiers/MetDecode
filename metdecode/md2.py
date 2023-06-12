@@ -4,6 +4,7 @@
 
 from typing import Tuple, Any
 
+import tqdm
 import numpy as np
 import scipy.optimize
 import scipy.special
@@ -12,6 +13,8 @@ import torch.nn.functional
 
 
 # torch.autograd.set_detect_anomaly(True)
+from scipy.optimize import nnls
+from scipy.special import logit
 
 
 class SideInformationModule(torch.nn.Module):
@@ -212,32 +215,48 @@ class MetDecodeV2:
 
         return methylated, depths
 
-    def _nnls(self, A: np.ndarray, B: np.ndarray) -> np.ndarray:
-        Alpha_hat = []
-        for i in range(len(B)):
-            x, residuals = scipy.optimize.nnls(A.T, B[i], maxiter=3000)
-            if self.n_unknown_tissues > 0:
-                x = np.concatenate((x, np.full(self.n_unknown_tissues, 0.2 / self.n_unknown_tissues)))
-            Alpha_hat.append(x)
-        Alpha_hat = np.asarray(Alpha_hat)
-        Alpha_hat /= Alpha_hat.sum(axis=1)[:, np.newaxis]
-        return Alpha_hat
+    @staticmethod
+    def nnls(R_atlas: np.ndarray, R_cfdna: np.ndarray, W_cfdna: np.ndarray) -> np.ndarray:
+        n_samples = len(R_cfdna)
+        alpha_hat = []
+        for i in range(n_samples):
+            A = (np.sqrt(W_cfdna[np.newaxis, i, :]) * R_atlas).T
+            b = np.sqrt(W_cfdna[i, :]) * R_cfdna[i, :]
+            x, residuals = nnls(A, b, maxiter=3000)
+            alpha_hat.append(x)
+        alpha_hat = np.asarray(alpha_hat)
+        alpha_hat /= alpha_hat.sum(axis=1)[:, np.newaxis]
+        return alpha_hat
 
     def _init_alpha_and_gamma(self) -> Tuple[np.ndarray, np.ndarray]:
-        assert not np.any(self.R_depths <= self.R_methylated)
-        A = self.R_methylated / self.R_depths
-        B = self.X_methylated / self.X_depths
-        Alpha_hat = self._nnls(A, B)
-        Alpha_hat += 1e-6
-        Alpha_hat /= np.sum(Alpha_hat, axis=1)[:, np.newaxis]
-        Alpha_logit = np.log(Alpha_hat)
+        R_atlas = self.R_methylated / self.R_depths
+        R_cfdna = self.X_methylated / self.X_depths
+        W_cfdna = self.X_depths / np.sum(self.X_depths)
+        alpha_hat = MetDecodeV2.nnls(R_atlas, R_cfdna, W_cfdna)
+        alpha_hat += 1e-6
+        alpha_hat /= np.sum(alpha_hat, axis=1)[:, np.newaxis]
 
-        if self.n_unknown_tissues > 0:
-            extra = np.random.rand(self.n_unknown_tissues, A.shape[1]) * 0.98 + 0.01
-            A = np.concatenate((A, extra), axis=0)
-        gamma_logit = scipy.special.logit(A)
+        lb = np.min(R_atlas, axis=0)
+        ub = np.max(R_atlas, axis=0)
 
-        return Alpha_logit, gamma_logit
+        n_unknowns = self.n_unknown_tissues
+        while n_unknowns > 0:
+            residuals = np.dot(alpha_hat, R_atlas) - R_cfdna
+            residuals = np.median(residuals, axis=0)
+            r = (residuals <= 0).astype(float)
+            r = lb + r * (ub - lb)
+            R_atlas = np.concatenate((R_atlas, r[np.newaxis, :]), axis=0)
+
+            alpha_hat = MetDecodeV2.nnls(R_atlas, R_cfdna, W_cfdna)
+            alpha_hat += 1e-6
+            alpha_hat /= np.sum(alpha_hat, axis=1)[:, np.newaxis]
+
+            n_unknowns -= 1
+
+        alpha_logit = np.log(alpha_hat)
+        gamma_logit = logit(R_atlas)
+
+        return alpha_logit, gamma_logit
 
     def _objective(self, alpha_logit: torch.Tensor, gamma_logit: torch.Tensor) -> Any:
 
@@ -340,12 +359,12 @@ class MetDecodeV2:
         optimizer.add([alpha_logit], 1e-2)
         if self.correction:
             optimizer.add([gamma_logit], 1e-3)
-        optimizer.add(list(self.side_information_model.parameters()), 1e-3)
+            optimizer.add(list(self.side_information_model.parameters()), 1e-3)
 
         n_steps_without_improvement = 0
         best_loss = np.inf
         extra_info = {'loss': []}
-        for iteration in range(max_n_iter):
+        for iteration in tqdm.tqdm(range(max_n_iter)):
 
             optimizer.zero_grad()
             loss = self._objective(alpha_logit, gamma_logit)
@@ -376,5 +395,4 @@ class MetDecodeV2:
 
         alpha_arr = scipy.special.softmax(alpha_logit.data.numpy(), axis=1)
 
-        alpha_arr = alpha_arr[:, :self.n_known_tissues]
         return alpha_arr

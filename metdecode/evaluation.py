@@ -204,7 +204,6 @@ class Evaluation:
     def known_fraction_diff(alpha_pred: np.ndarray, alpha: np.ndarray) -> np.ndarray:
         p1 = np.sum(alpha_pred, axis=1)
         p2 = np.sum(alpha[:, :alpha_pred.shape[1]], axis=1)
-        print(list(p1 - p2))
         return np.asarray([p1, p2])
 
     @staticmethod

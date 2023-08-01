@@ -21,6 +21,7 @@
 
 import os
 import pickle
+import uuid
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -38,58 +39,21 @@ DATA_FOLDER = os.path.join(ROOT, 'data')
 ATLAS_FILEPATH = os.path.join(DATA_FOLDER, 'atlas_insil.tsv')
 
 
-def wgbs_var_func(x):
-    a = -33.26707218
-    b = 68.81917451
-    c = -48.50627055
-    d = 13.16493979
-    e = -6.96673189
-    y_hat = np.exp(a * x ** 4 + b * x ** 3 + c * x ** 2 + d * x + e)
-    return np.clip(y_hat, 0.001, x * (1. - x))
+def generate_mix_dataset(
+        n_profiles: int = 48,
+        n_unknown_tissues: int = 0,
+        n_markers: int = 4441
+) -> dict:
 
-
-def wgbs_mean_func(x):
-    a = 9.18240158e+02
-    b = -3.10896889e+03
-    c = 4.24023626e+03
-    d = -2.98356794e+03
-    e = 1.16071968e+03
-    f = -2.52894933e+02
-    g = 3.43328033e+01
-    h = -3.62453197e+00
-    tmp = a * x ** 7 + b * x ** 6
-    tmp += c * x ** 5 + d * x ** 4 + e * x ** 3 + f * x ** 2 + g * x + h
-    y_hat = expit(tmp)
-    return np.clip(y_hat, 0.0001, 0.9999)
-
-
-def wgbs_to_em(gamma, bias_func, noisy=True):
-    mean = bias_func(gamma)
-    X_clean = mean
-    if noisy:
-        sfs = np.random.rand(1, gamma.shape[1])
-        var = wgbs_var_func(gamma)
-        var = np.clip(var, 0.001, 0.999 * mean * (1. - mean))
-        var = var * 0.5  # TODO
-        tmp = ((mean * (1. - mean)) / var - 1.)
-        alpha = mean * tmp
-        beta = (1. - mean) * tmp
-        X_noisy = scipy.stats.beta.isf(sfs, alpha, beta)
-        # X_noisy = X_noisy * 0.5 + gamma * 0.5  # TODO
-    else:
-        X_noisy = X_clean
-    return X_noisy, X_clean
-
-
-def generate_mix_dataset(n_profiles: int = 48, n_tissues: int = 13, n_known_tissues: int = 13,
-                         n_markers: int = 4441,
-                         bias: bool = True, verbose: bool = False, **kwargs) -> dict:
+    n_known_tissues = 13
+    n_tissues = n_known_tissues + n_unknown_tissues
 
     M_cfdna, D_cfdna, sample_names, _ = load_input_file(os.path.join(DATA_FOLDER, 'bothbatch.tims.txt'))
     M_atlas, D_atlas, cell_type_names, _ = load_input_file(ATLAS_FILEPATH)
     print(cell_type_names)
     assert len(cell_type_names) == len(M_atlas)
     assert len(cell_type_names) == len(D_atlas)
+    assert M_atlas.shape[0] == n_known_tissues
 
     idx = np.arange(D_cfdna.shape[1])
     np.random.shuffle(idx)
@@ -98,8 +62,6 @@ def generate_mix_dataset(n_profiles: int = 48, n_tissues: int = 13, n_known_tiss
     D_cfdna = D_cfdna[:, idx]
     M_atlas = M_atlas[:, idx]
     D_atlas = D_atlas[:, idx]
-
-    print(cell_type_names, len(cell_type_names))
 
     #assert R_depths.shape[0] == n_tissues
     #n_tissues = R_depths.shape[0]
@@ -112,37 +74,36 @@ def generate_mix_dataset(n_profiles: int = 48, n_tissues: int = 13, n_known_tiss
     R_methylated_orig = M_atlas + 1
 
     gamma = R_methylated_orig / R_depths
+
+    for i in range(n_unknown_tissues):
+        unk = (np.random.rand(1, gamma.shape[1]) < 0.7).astype(float)
+        gamma = np.concatenate((gamma, unk), axis=0)
+        R_depths = np.concatenate((R_depths, np.median(R_depths, axis=0)[np.newaxis, :]), axis=0)
+
+    #gamma = (gamma > np.median(gamma, axis=0)[np.newaxis, :]).astype(float)
+
     alpha = np.zeros((n_profiles, n_tissues))
+    prior = [0.7393, 3.0938, 8.2576, 3.8222, 1.7946, 4.6937, 2.6914, 29.6514]
+    for i in range(n_unknown_tissues):
+        prior.append(15)
     for i in range(len(alpha)):
-        alpha_ = np.random.dirichlet(np.asarray(
-            [0.7393, 3.0938, 8.2576, 3.8222, 1.7946, 4.6937, 2.6914, 29.6514]))
+        alpha_ = np.random.dirichlet(np.asarray(prior))
         j = np.random.randint(0, 6)
         alpha[i, j] = alpha_[0]
         alpha[i, 6:] = alpha_[1:]
     cancer_mask = np.zeros(n_tissues, dtype=bool)
     cancer_mask[:6] = True
-    print(np.sum(alpha, axis=1))
 
-    # Add bias to atlas
-    if bias:
-        bias_func = wgbs_mean_func
-        gamma_distorted, gamma_prime_clean = wgbs_to_em(gamma, bias_func, noisy=True)
-        diff = gamma_distorted - gamma
-        for j in range(diff.shape[0]):
-            print(f'Expected difference in average methylation for atlas entity {j}: '
-                  f'{np.mean(diff[j, :]) * 100.} % '
-                  f'({np.mean(gamma[j, :]) * 100.} -> {np.mean(gamma_distorted[j, :]) * 100.})')
-    else:
-        gamma_distorted = gamma
-        gamma_prime_clean = gamma
+    gamma_distorted = gamma
+    gamma_prime_clean = gamma
 
-    #coverage_factor = 1
-    #R_methylated = np.random.binomial(R_depths * coverage_factor, gamma_distorted)
-    #X_methylated = np.random.binomial(X_depths * coverage_factor, np.dot(alpha, gamma), size=(n_profiles, R_depths.shape[1]))
-    #R_methylated = np.round(R_methylated / coverage_factor).astype(int)
-    #X_methylated = np.round(X_methylated / coverage_factor).astype(int)
-    R_methylated = np.round(R_depths * gamma_distorted).astype(int)
-    X_methylated = np.round(X_depths * np.dot(alpha, gamma)).astype(int)
+    coverage_factor = 1
+    R_methylated = np.random.binomial(np.round(R_depths * coverage_factor).astype(int), gamma_distorted)
+    X_methylated = np.random.binomial(np.round(X_depths * coverage_factor).astype(int), np.dot(alpha, gamma), size=(n_profiles, R_depths.shape[1]))
+    R_methylated = np.round(R_methylated / coverage_factor).astype(int)
+    X_methylated = np.round(X_methylated / coverage_factor).astype(int)
+    R_methylated = np.clip(R_methylated, 0, R_depths)
+    X_methylated = np.clip(X_methylated, 0, X_depths)
 
     assert R_methylated.shape[1] == n_markers
     assert R_depths.shape[1] == n_markers
@@ -151,25 +112,22 @@ def generate_mix_dataset(n_profiles: int = 48, n_tissues: int = 13, n_known_tiss
     age = np.full(n_profiles, 20)
     enzymatic = np.ones(n_profiles, dtype=bool)
 
-    R_methylated = R_methylated[:n_known_tissues, :]
-    R_depths = R_depths[:n_known_tissues, :]
-
     assert alpha.shape == (n_profiles, n_tissues)
     assert gamma.shape == (n_tissues, n_markers)
     assert X_methylated.shape == (n_profiles, n_markers)
     assert X_depths.shape == (n_profiles, n_markers)
-    assert R_methylated.shape == (n_known_tissues, n_markers)
-    assert R_depths.shape == (n_known_tissues, n_markers)
+    assert R_methylated.shape == (n_tissues, n_markers)
+    assert R_depths.shape == (n_tissues, n_markers)
 
     return {
         'X-methylated': X_methylated,
         'X-depths': X_depths,
-        'R-methylated': R_methylated,
-        'R-depths': R_depths,
+        'R-methylated': R_methylated[:n_known_tissues],
+        'R-depths': R_depths[:n_known_tissues],
         'Alpha': alpha,
-        'Gamma': gamma,
-        'Gamma-prime-clean': gamma_prime_clean,
-        'Gamma-prime-noisy': gamma_distorted,
+        'Gamma': gamma[:n_known_tissues],
+        'Gamma-prime-clean': gamma_prime_clean[:n_known_tissues],
+        'Gamma-prime-noisy': gamma_distorted[:n_known_tissues],
         'n-known-tissues': n_known_tissues,
         'age': age,
         'is-female': is_female,
@@ -192,39 +150,36 @@ def evaluate(dataset: dict, evaluation: Evaluation, exp_id: str):
         dataset['X-depths'],
     ]
 
-    METHOD_NAMES = ['metdecode2-nocorrection', 'metdecode2', 'metdecode-nocorrection', 'metdecode']
+    # METHOD_NAMES = ['metdecode2-nc-nu', 'metdecode2-nu', 'metdecode2-nc', 'metdecode2']
+    METHOD_NAMES = ['metdecode2-nc-nu', 'metdecode2-nc']
 
     for method_name in METHOD_NAMES:
 
         print(f'Running method "{method_name}"')
 
         gamma_hat = dataset['Gamma-prime-noisy']
-        if method_name == 'metdecode-nocorrection':
-            model = Model()
-            Alpha_hat = model.fit(*args, n_unknown_tissues=1, infer=False)
-            gamma_hat = model.R_atlas
-        elif method_name == 'metdecode':
-            model = Model()
-            Alpha_hat = model.fit(*args, n_unknown_tissues=1, infer=True)
-            gamma_hat = model.R_atlas
-        elif method_name == 'metdecode2-nocorrection':
-            model = MetDecodeV2(*args, n_unknown_tissues=1, correction=False)
+        if method_name == 'metdecode2':
+            model = MetDecodeV2(*args, n_unknown_tissues=1, beta=1)
             Alpha_hat = model.deconvolute()
-            gamma_hat = model.R_atlas
-        elif method_name == 'metdecode2':
-            model = MetDecodeV2(*args, n_unknown_tissues=1, correction=True)
+        elif method_name == 'metdecode2-nu':
+            model = MetDecodeV2(*args, n_unknown_tissues=0, beta=1)
             Alpha_hat = model.deconvolute()
-            gamma_hat = model.R_atlas
+        elif method_name == 'metdecode2-nc':
+            model = MetDecodeV2(*args, n_unknown_tissues=1, beta=0)
+            Alpha_hat = model.deconvolute()
+        elif method_name == 'metdecode2-nc-nu':
+            model = MetDecodeV2(*args, n_unknown_tissues=0, beta=0)
+            Alpha_hat = model.deconvolute()
         else:
             raise NotImplementedError(f'Unknown method "{method_name}"')
-
-        print(Alpha_hat.shape, dataset['Alpha'].shape, dataset['Gamma'].shape, dataset['X-methylated'].shape, dataset['X-depths'].shape)
+        print(Alpha_hat.shape)
 
         evaluation.add(Alpha_hat, dataset['Alpha'], gamma_hat, dataset['Gamma'],
             dataset['X-methylated'], dataset['X-depths'], method_name, exp_id, n_known_tissues)
 
 
-if __name__ == '__main__':
+def main():
+
     ROOT = os.path.dirname(os.path.abspath(__file__))
     OUT_FOLDER = os.path.join(ROOT, 'results')
     if not os.path.exists(OUT_FOLDER):
@@ -233,30 +188,28 @@ if __name__ == '__main__':
     N_REPEATS = 1
 
     dataset = generate_mix_dataset(
-        bias=True,
-        n_profiles=200,
+        n_unknown_tissues=1,
+        n_profiles=1000,
         n_markers=1000
     )
     evaluation = Evaluation()
     evaluate(dataset, evaluation, f'sim')
-    evaluation.save('results-sim.pkl')
-    with open('dataset.pkl', 'wb') as f:
-        pickle.dump(dataset, f)
+    evaluation.save(f'results2-{uuid.uuid4()}.pkl')
 
     colors = [
         'slateblue', 'mediumvioletred', 'goldenrod', 'darkseagreen'
     ]
-    # pretty_names = ['NNLS', 'CelFiE', 'MetDecode']
-    pretty_names = ['MetDecode V2 (no correction)', 'MetDecode V2', 'MetDecode (no correction)', 'MetDecode']
 
-    # methods = ['nnls', 'celfie', 'metdecodeV4']
-    methods = ['metdecode2-nocorrection', 'metdecode2', 'metdecode-nocorrection', 'metdecode']
+    #pretty_names = [r'$\beta=0, unk=0$', r'$\beta=1, unk=0$', r'$\beta=0, unk=1$', r'$\beta=1, unk=1$']
+    pretty_names = [r'$\beta=0, unk=0$', r'$\beta=0, unk=1$']
+    #methods = ['metdecode2-nc-nu', 'metdecode2-nu', 'metdecode2-nc', 'metdecode2']
+    methods = ['metdecode2-nc-nu', 'metdecode2-nc']
 
     cell_type_names = [
         'BRCA', 'CEAD+CESC', 'COAD', 'OV', 'READ', 'B cell', 'CD4+ T-cell', 'CD8+ T-cell',
         'Erythroblast', 'Monocyte', 'Natural killer cell', 'Neutrophil']
     fig = plt.figure(figsize=(12, 9))
-    for j in range(12):
+    for j in range(11):
         plt.subplot(3, 4, j + 1)
         width = 0
 
@@ -292,23 +245,9 @@ if __name__ == '__main__':
         atlas_diff = evaluation.data[method_name][f'sim']['atlas-diff']
         print(f'{pretty_names[i]} & {mse:.6f} & {chi2:.6f} & {pearson:.4f} & {spearman:.4f} & {atlas_diff:.6f} \\\\')
 
-    """
-    evaluation = Evaluation.load(os.path.join(OUT_FOLDER, 'results-sim.pkl'))
-    with open('dataset.pkl', 'rb') as f:
-        dataset = pickle.load(f)
-
-    gamma = dataset['Gamma']
-    gamma_prime_clean = dataset['Gamma-prime-clean']
-    gamma_distorted = dataset['Gamma-prime-noisy']
-    gamma_pred = evaluation.data['metdecode2'][f'sim']['gamma-pred']
-
-    d = (gamma_prime_clean - gamma)
-    d_pred = (gamma_pred - gamma)
-    plt.plot([-1, 1], [-1, 1])
-    plt.scatter(d.flatten(), d_pred.flatten(), alpha=0.1, color='royalblue')
-    plt.xlabel('Meth. difference between EMseq and bisulfite atlas')
-    plt.ylabel('Bias estimated by MetDecode')
-    plt.show()
-    """
-
     print('Finished')
+
+
+if __name__ == '__main__':
+    for _ in range(50):
+        main()

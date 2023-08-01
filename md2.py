@@ -32,6 +32,12 @@ parser.add_argument(
     default=0,
     help='Number of unknown tissues to infer and add to the atlas'
 )
+parser.add_argument(
+    '-beta',
+    type=float,
+    default=1,
+    help='Importance attached to the coverage of each marker region'
+)
 args = parser.parse_args()
 
 # Input and output files
@@ -69,7 +75,7 @@ print('Number of cfDNA profiles       : %i' % M_cfdna.shape[0])
 print('Number of tissues in the atlas : %i' % M_atlas.shape[0])
 print('Number of markers              : %i' % M_atlas.shape[1])
 
-model = MetDecodeV2(M_atlas, D_atlas, M_cfdna, D_cfdna, n_unknown_tissues=args.n_unknown_tissues)
+model = MetDecodeV2(M_atlas, D_atlas, M_cfdna, D_cfdna, n_unknown_tissues=args.n_unknown_tissues, beta=args.beta)
 alpha = model.deconvolute()
 
 # Results are stored in Alpha_hat,

@@ -116,9 +116,9 @@ class Evaluation:
             'atlas-diff': np.mean((gamma - gamma_pred[:gamma.shape[0], :]) ** 2)
         }
 
-        print(f'{method_name}: {np.mean(mse)} MSE, {np.mean(chi2)} chi2, '
-              f'{ranking_score} ranking score, '
-              f'{np.mean(pearson)} Pearson, {np.mean(spearman)} Spearman')
+        #print(f'{method_name}: {np.mean(mse)} MSE, {np.mean(chi2)} chi2, '
+        #      f'{ranking_score} ranking score, '
+        #      f'{np.mean(pearson)} Pearson, {np.mean(spearman)} Spearman')
 
     def save(self, filepath: str):
         with open(filepath, 'wb') as f:

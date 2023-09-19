@@ -1,44 +1,67 @@
-MetDecode
+# MetDecode
+
+Reference-based deconvolution of methylation patterns
+
 ---
 
-## 1) Correct the atlas for biases
+## Installation
+
+MetDecode is written in Python 3.11. Dependencies can be installed by running:
+```bash
+pip3 install -r requirements.txt
+```
+
+To be able to run the tool from any directory (including the `scripts` directory), you will have to first install MetDecode itself:
+```bash
+python3 setup.py install --user
+```
+
+## Running the tool
+
+To run the tool in command line, you will have to execute the `run.py` with the following 3 positioning arguments:
+- `atlas-filepath`: TSV file containing the reference atlas. For the input file format, please refer to `data/atlas.tsv` for example. Each tissue / cell type has two dedicated columns, namely the number of methylated CpG sites spanned in the marker region, and the total number of CpG sites (both methylation and unmethylated). Each row corresponds to a marker region. The first 3 columns contain respectively the chromosome, start position and end position of each marker region. The file must contain a header of the form: CHROM    START   END TISSUE1_METH    TISSUE1_DEPTH   TISSUE2_METH    ...
+- `cfdna-filepath`: TSV file containing the cfDNA samples. The input file format is similar to `atlas-filepath`, please refer to `data/insilico-cfdna.tsv` for example.
+- `out-filepath`: Output CSV file. It will contain the estimations for the cell type contributions. Number of rows (excluding the header) will be equal to the number of cfDNA samples, and the number of columns will be equal to the number of tissues / cell types in the reference atlas.  
+
+The following command runs MetDecode on _in-silico_-generated data with default hyper-parameters.
 
 ```bash
-python3 correct.py atlas.tsv cfdna.tsv corrected-atlas.tsv
+python3 run.py data/insilico-atlas.tsv insilico-cfdna.tsv output.csv
 ```
 
-Both input files `atlas.tsv` and `cfdna.tsv` should follow this format:
-```
-CHROM	START	END	BLCA_METH	BLCA_DEPTH	BRCA_METH	BRCA_DEPTH  ...
-chr1	1161075	1161776	1491.000	1778	2052.000	2326    ...
-chr1	1221864	1222225	955.000	1112	1176.000	1305    ...
-chr1	1232963	1233492	2715.000	2904	3666.000	3933    ...
-...
-```
-Values should be tab-separated, and the three first columns correspond to the chromosome,
-start and end positions of the marker region, respectively. Starting from the fourth column, column `2i`
-gives the methylated count for cell type `i`, and column `2i+1` the total count for cell type `i`.
-Header should be of the same form as shown above with the first 3 columns being `CHROM`, `START` and `END`,
-and the other column names ending either with `_METH` or `_DEPTH`.
-
-Output file `corrected-atlas.tsv` will be saved in the exact same format.
-
-The `correct.py` script has optional arguments:
-- `-p`: The degree of importance attached to the coverage. `-p 0` enforces uniform weights on the methylation ratios, while `-p 1` re-weight them based on the read counts. Any positive value (e.g. `-p 0.4`) is allowed.
-- `-lambda1`: Regularisation of the Gamma matrix. High values will constrain the Gamma matrix to stay close to the input methylation ratios.
-- `-lambda2`: Regularisation of the bias terms. High values will constrain the corrected atlas to stay close to the Gamma matrix.
-- `-max-correction`: Maximum difference allowed between the input methylation ratios and the corrected ratios.
-- `-multiplicative`: Whether to perform multiplicative bias correction `sigma(sigma^{-1}(gamma) + u * v)` instead of additive correction `sigma(sigma^{-1}(gamma) + u + v)`.
-- `-n-unknown-tissues`: Number of atlas entities to infer automatically from the cfDNA samples and add to the current atlas.
-- `-n-hidden`: Relevant only when `-n-unknown-tissues` is strictly greater than 0. Number of hidden neurons within each layer of the neural network. Lower values prevent the network from overfitting the data and inferring atlas entities that correlate too much with the input cfDNA samples.
-- `-maxit`: Maximum number of iterations. Reducing this number increases the speed but may produce less accurate results. 
-
-## 2) Deconvolute the samples using the corrected atlas
+If an unknown contributor (a tissue / cell type suspected to be present in the cfDNA mixtures but not present 
+in the reference atlas) needs to be modelled, this can be specified with the `-n-unknown-tissues` optional argument:
 
 ```bash
-python3 deconvolute.py corrected-atlas.tsv cfdna.tsv alpha.csv
+python3 run.py data/insilico-atlas-1unk.tsv insilico-cfdna-1unk.tsv output.csv -n-unknown-tissues 1
 ```
 
-Output file is a CSV file containing the estimated cell type contributions
-from each atlas entity to each cfDNA sample.
-Contributions are given as percentages and will always sum up to one.
+When `-n-unknown-tissues` is strictly greater than 1, the sum of each row in `output.csv` is no longer guaranteed to be
+equal to 1, as the difference corresponds to the estimated contribution from the unknown tissue.
+
+Because MetDecode has been designed for sequencing data and is fed with counts as input, one might consider using the coverage
+as extra information for more accurate deconvolution. Indeed, in the absence of biases, a higher coverage makes the estimation
+of the corresponding methylation ratio more reliable. However, in the presence of (biological, technical) biases, such assumption
+does not hold anymore. The importance attached to the coverage can be specified with the `-beta` optional argument, for example:
+
+```bash
+python3 run.py data/insilico-atlas.tsv insilico-cfdna.tsv output.csv -beta 0.9
+```
+
+## Reproducing our simulation results
+
+Create random simulation experiments to assess MetDecode's ability to model unknown contributors and to take into 
+account the coverage of each marker region:
+
+```bash
+cd scripts
+python3 simulations.py
+python3 make-sim-figures.py
+```
+
+Figure `sim1.png` compares the Pearson correlation coefficients without (beta=0) and with (beta=1)
+taking into account the coverage while deconvolving.
+
+Figure `sim2.png` compares the Pearson correlation coefficients without (unk=0) and with (unk=1)
+modelling of an unknown contributor. For this second experiment, one extra cell type not present in the reference atlas
+has been randomly added to cfDNA mixtures.

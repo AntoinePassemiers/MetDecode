@@ -29,9 +29,9 @@ packages = [
 setup(
     name='metdecode',
     version='1.0.0',
-    description='Reference-based Non-linear Deconvolution of Whole-Genome Methylation Sequencing data',
+    description='Reference-based Deconvolution of Whole-Genome Methylation Sequencing data',
     url='https://github.com/AntoinePassemiers/MetDecode',
     author='Antoine Passemiers',
     packages=packages,
-    include_package_data=False,
-    install_requires=['numpy >= 1.13.3', 'torch'])
+    include_package_data=False
+)

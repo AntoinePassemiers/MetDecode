@@ -15,10 +15,11 @@
 
 *.pickle
 
+venv/
 dist/
 build/
 .idea/
 *.egg-info/
 
 data/
-results/
+sim-results/

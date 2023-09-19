@@ -25,7 +25,14 @@ import torch
 
 class Optimizer:
 
-    def __init__(self, alpha_up=1.01, alpha_down=0.9, lr_lb=0, lr_ub=1e+5, verbose=False):
+    def __init__(
+            self,
+            alpha_up=1.015,
+            alpha_down=0.9,
+            lr_lb=0,
+            lr_ub=1e+5,
+            verbose=False
+    ):
         self.alpha_up = alpha_up
         self.alpha_down = alpha_down
         self.lr_lb = lr_lb
@@ -37,13 +44,13 @@ class Optimizer:
         self.cursor = 0
         self.last_loss = np.inf
 
-    def add(self, param, lr, weight_decay: float = 0.0):
+    def add(self, param, lr):
         params = [{
             'params': param,
             'lr': lr
         }]
         self.parameters.append(params[0])
-        self.optimizers.append(torch.optim.Adam(params, lr=lr, weight_decay=weight_decay))
+        self.optimizers.append(torch.optim.Adam(params, lr=lr))
 
     def zero_grad(self):
         for optimizer in self.optimizers:

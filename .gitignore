@@ -3,8 +3,6 @@
 
 *.npy
 *.pkl
-*.tsv
-*.csv
 
 *.swp
 *.log
@@ -21,5 +19,4 @@ build/
 .idea/
 *.egg-info/
 
-data/
 sim-results/
